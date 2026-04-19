@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String         @id @default(cuid())
+  email     String         @unique
+  name      String
+  password  String
+  sheets    ExpenseSheet[]
+  createdAt DateTime       @default(now())
+}
+
+model ExpenseSheet {
+  id           String        @id @default(cuid())
+  title        String
+  ownerId      String
+  owner        User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  participants Participant[]
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Participant {
+  id           String        @id @default(cuid())
+  name         String
+  email        String?
+  phone        String?
+  sheetId      String
+  sheet        ExpenseSheet  @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  splits       Split[]
+  transactions Transaction[]
+}
+
+model Transaction {
+  id        String       @id @default(cuid())
+  title     String
+  amount    Float
+  paidById  String
+  paidBy    Participant  @relation(fields: [paidById], references: [id])
+  sheetId   String
+  sheet     ExpenseSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  splits    Split[]
+  createdAt DateTime     @default(now())
+}
+
+model Split {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  amount        Float
+  percentage    Float?
+}
