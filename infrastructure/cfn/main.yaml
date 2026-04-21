@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  SplitEase — Root stack. Deploys all nested stacks in dependency order.
+  Architecture: CloudFront → ALB → ECS Fargate (private) → RDS PostgreSQL (isolated)
+
+  Prerequisites:
+    1. Upload nested templates to S3:  ./deploy.sh upload <bucket>
+    2. Fill in secrets in Secrets Manager after first deploy
+    3. Push a Docker image to ECR and set ImageUri parameter
+
+Parameters:
+  # ── Global ──────────────────────────────────────────────────────────────
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+
+  TemplateBucket:
+    Type: String
+    Description: S3 bucket containing the uploaded nested CFN templates
+
+  TemplatePrefix:
+    Type: String
+    Default: cfn
+    Description: S3 key prefix where templates are stored
+
+  # ── App ─────────────────────────────────────────────────────────────────
+  ImageUri:
+    Type: String
+    Description: Full ECR image URI (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/splitease-prod:v1.2.3)
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate ARN in the deployment region (for ALB HTTPS)
+
+  CloudFrontCertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate ARN in us-east-1 (for CloudFront custom domain)
+
+  DomainName:
+    Type: String
+    Default: ''
+    Description: Custom domain name (e.g. app.splitease.com)
+
+  # ── Sizing ──────────────────────────────────────────────────────────────
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+
+  TaskCPU:
+    Type: String
+    Default: '512'
+
+  TaskMemory:
+    Type: String
+    Default: '1024'
+
+  DesiredCount:
+    Type: Number
+    Default: 2
+
+Resources:
+  SecretsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.${AWS::URLSuffix}/${TemplatePrefix}/secrets.yaml
+      Parameters:
+        Environment: !Ref Environment
+      Tags:
+        - {Key: Environment, Value: !Ref Environment}
+
+  ECRStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.${AWS::URLSuffix}/${TemplatePrefix}/ecr.yaml
+      Parameters:
+        Environment: !Ref Environment
+      Tags:
+        - {Key: Environment, Value: !Ref Environment}
+
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.${AWS::URLSuffix}/${TemplatePrefix}/vpc.yaml
+      Parameters:
+        Environment: !Ref Environment
+      Tags:
+        - {Key: Environment, Value: !Ref Environment}
+
+  # ECS stack is deployed first so RDS gets its SG id
+  ECSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [VPCStack, SecretsStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.${AWS::URLSuffix}/${TemplatePrefix}/ecs.yaml
+      Parameters:
+        Environment:    !Ref Environment
+        VpcId:          !GetAtt VPCStack.Outputs.VpcId
+        VpcCidr:        !GetAtt VPCStack.Outputs.VpcCidr
+        PublicSubnetA:  !GetAtt VPCStack.Outputs.PublicSubnetA
+        PublicSubnetB:  !GetAtt VPCStack.Outputs.PublicSubnetB
+        PrivateSubnetA: !GetAtt VPCStack.Outputs.PrivateSubnetA
+        PrivateSubnetB: !GetAtt VPCStack.Outputs.PrivateSubnetB
+        ImageUri:       !Ref ImageUri
+        DBSecretArn:    !GetAtt SecretsStack.Outputs.DBSecretArn
+        AppSecretArn:   !GetAtt SecretsStack.Outputs.AppSecretArn
+        DBEndpoint:     !GetAtt RDSStack.Outputs.DBEndpoint
+        DBPort:         !GetAtt RDSStack.Outputs.DBPort
+        CertificateArn: !Ref CertificateArn
+        TaskCPU:        !Ref TaskCPU
+        TaskMemory:     !Ref TaskMemory
+        DesiredCount:   !Ref DesiredCount
+      Tags:
+        - {Key: Environment, Value: !Ref Environment}
+
+  RDSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [VPCStack, SecretsStack, ECSStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.${AWS::URLSuffix}/${TemplatePrefix}/rds.yaml
+      Parameters:
+        Environment:       !Ref Environment
+        VpcId:             !GetAtt VPCStack.Outputs.VpcId
+        IsolatedSubnetA:   !GetAtt VPCStack.Outputs.IsolatedSubnetA
+        IsolatedSubnetB:   !GetAtt VPCStack.Outputs.IsolatedSubnetB
+        ECSSecurityGroupId: !GetAtt ECSStack.Outputs.ECSSecurityGroupId
+        DBSecretArn:       !GetAtt SecretsStack.Outputs.DBSecretArn
+        DBInstanceClass:   !Ref DBInstanceClass
+      Tags:
+        - {Key: Environment, Value: !Ref Environment}
+
+  CloudFrontStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ECSStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.${AWS::URLSuffix}/${TemplatePrefix}/cloudfront.yaml
+      Parameters:
+        Environment:       !Ref Environment
+        ALBDNSName:        !GetAtt ECSStack.Outputs.ALBDNSName
+        CertificateArn:    !Ref CloudFrontCertificateArn
+        DomainName:        !Ref DomainName
+      Tags:
+        - {Key: Environment, Value: !Ref Environment}
+
+Outputs:
+  AppURL:
+    Description: Application URL (CloudFront)
+    Value: !Sub 'https://${CloudFrontStack.Outputs.DistributionDomain}'
+
+  ALBUrl:
+    Description: ALB URL (direct, bypasses CDN)
+    Value: !Sub 'http://${ECSStack.Outputs.ALBDNSName}'
+
+  ECRRepository:
+    Description: ECR repository URI for pushing images
+    Value: !GetAtt ECRStack.Outputs.RepositoryUri
+
+  DBEndpoint:
+    Description: RDS endpoint (private — accessible from ECS only)
+    Value: !GetAtt RDSStack.Outputs.DBEndpoint
+
+  DBSecretArn:
+    Description: Secrets Manager ARN for DB credentials
+    Value: !GetAtt SecretsStack.Outputs.DBSecretArn
+
+  AppSecretArn:
+    Description: Secrets Manager ARN for app secrets — update values after first deploy
+    Value: !GetAtt SecretsStack.Outputs.AppSecretArn

@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SplitEase — CloudFront distribution in front of ALB
+
+Parameters:
+  Environment:
+    Type: String
+  ALBDNSName:
+    Type: String
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate ARN in us-east-1 (required for custom domain)
+  DomainName:
+    Type: String
+    Default: ''
+    Description: Custom domain (e.g. splitease.yourdomain.com). Leave blank to use CloudFront default.
+
+Conditions:
+  HasCustomDomain: !And
+    - !Not [!Equals [!Ref DomainName, '']]
+    - !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+  # Cache policy — static assets cached, API/auth bypassed
+  StaticCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub splitease-${Environment}-static
+        DefaultTTL: 86400       # 1 day
+        MaxTTL: 31536000        # 1 year
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig: {CookieBehavior: none}
+          HeadersConfig: {HeaderBehavior: none}
+          QueryStringsConfig: {QueryStringBehavior: none}
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+
+  NoCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub splitease-${Environment}-nocache
+        DefaultTTL: 0
+        MaxTTL: 0
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig: {CookieBehavior: all}
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              - Authorization
+              - Host
+              - Origin
+              - Referer
+          QueryStringsConfig: {QueryStringBehavior: all}
+          EnableAcceptEncodingBrotli: false
+          EnableAcceptEncodingGzip: false
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Comment: !Sub SplitEase ${Environment}
+        Aliases: !If [HasCustomDomain, [!Ref DomainName], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+
+        Origins:
+          - Id: alb
+            DomainName: !Ref ALBDNSName
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only   # ALB terminates TLS; CloudFront→ALB is internal
+              OriginSSLProtocols: [TLSv1.2]
+
+        DefaultCacheBehavior:
+          TargetOriginId: alb
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: !Ref NoCachePolicy
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+
+        CacheBehaviors:
+          # Next.js static assets — long cache
+          - PathPattern: '_next/static/*'
+            TargetOriginId: alb
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticCachePolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+          # Public folder assets
+          - PathPattern: 'favicon.ico'
+            TargetOriginId: alb
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: !Ref StaticCachePolicy
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+
+        CustomErrorResponses:
+          - ErrorCode: 503
+            ResponseCode: 503
+            ResponsePagePath: /api/health
+            ErrorCachingMinTTL: 10
+
+        Logging:
+          Bucket: !Sub 'aws-logs-${AWS::AccountId}-${AWS::Region}.s3.amazonaws.com'
+          Prefix: !Sub 'cloudfront/splitease-${Environment}/'
+          IncludeCookies: false
+
+Outputs:
+  DistributionId:
+    Value: !Ref Distribution
+    Export: {Name: !Sub '${AWS::StackName}-DistributionId'}
+  DistributionDomain:
+    Value: !GetAtt Distribution.DomainName
+    Export: {Name: !Sub '${AWS::StackName}-DistributionDomain'}

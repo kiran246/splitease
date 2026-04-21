@@ -1,0 +1,334 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SplitEase — ECS Fargate cluster, service, ALB, auto-scaling
+
+Parameters:
+  Environment:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  VpcCidr:
+    Type: String
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet::Id
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet::Id
+  ImageUri:
+    Type: String
+    Description: ECR image URI including tag (e.g. 123456.dkr.ecr.us-east-1.amazonaws.com/splitease-prod:v1.0.0)
+  DBSecretArn:
+    Type: String
+  AppSecretArn:
+    Type: String
+  DBEndpoint:
+    Type: String
+  DBPort:
+    Type: String
+    Default: '5432'
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate ARN for HTTPS. Leave blank for HTTP-only.
+  TaskCPU:
+    Type: String
+    Default: '512'
+    AllowedValues: ['256','512','1024','2048','4096']
+  TaskMemory:
+    Type: String
+    Default: '1024'
+    AllowedValues: ['512','1024','2048','3072','4096','8192']
+  DesiredCount:
+    Type: Number
+    Default: 2
+  AppVersion:
+    Type: String
+    Default: latest
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+  # ── Security groups ────────────────────────────────────────────────────────
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB — public HTTPS/HTTP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: '0.0.0.0/0'}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: '0.0.0.0/0'}
+      Tags: [{Key: Name, Value: !Sub splitease-${Environment}-alb-sg}]
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Fargate tasks — allow ALB only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags: [{Key: Name, Value: !Sub splitease-${Environment}-ecs-sg}]
+
+  # ── ALB ───────────────────────────────────────────────────────────────────
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub splitease-${Environment}
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref ALBSecurityGroup]
+      LoadBalancerAttributes:
+        - {Key: access_logs.s3.enabled, Value: 'false'}
+        - {Key: idle_timeout.timeout_seconds, Value: '60'}
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub splitease-${Environment}-tg
+      Port: 3000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - {Key: deregistration_delay.timeout_seconds, Value: '30'}
+        - {Key: stickiness.enabled, Value: 'false'}
+
+  HTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - !If
+          - HasCertificate
+          - Type: redirect
+            RedirectConfig:
+              Protocol: HTTPS
+              Port: '443'
+              StatusCode: HTTP_301
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ── IAM ───────────────────────────────────────────────────────────────────
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub splitease-${Environment}-task-exec
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: secrets
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref DBSecretArn, !Ref AppSecretArn]
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub splitease-${Environment}-task
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ses-send
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [ses:SendEmail, ses:SendRawEmail]
+                Resource: '*'
+
+  # ── CloudWatch log group ──────────────────────────────────────────────────
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/splitease-${Environment}
+      RetentionInDays: 30
+
+  # ── ECS cluster ───────────────────────────────────────────────────────────
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub splitease-${Environment}
+      ClusterSettings:
+        - {Name: containerInsights, Value: enabled}
+
+  # ── Task definition ───────────────────────────────────────────────────────
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub splitease-${Environment}
+      Cpu: !Ref TaskCPU
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: app
+          Image: !Ref ImageUri
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+          Essential: true
+          Environment:
+            - {Name: NODE_ENV, Value: production}
+            - {Name: PORT,     Value: '3000'}
+            - Name: DATABASE_URL
+              Value: !Sub
+                - 'postgresql://{{resolve:secretsmanager:${DBSecretArn}:SecretString:username}}:{{resolve:secretsmanager:${DBSecretArn}:SecretString:password}}@${DBEndpoint}:${DBPort}/splitease?schema=public'
+                - {DBEndpoint: !Ref DBEndpoint, DBPort: !Ref DBPort}
+            - {Name: NEXTAUTH_URL, Value: !Sub 'https://${ALB.DNSName}'}
+          Secrets:
+            - {Name: NEXTAUTH_SECRET, ValueFrom: !Sub '${AppSecretArn}:NEXTAUTH_SECRET::'}
+            - {Name: STRIPE_SECRET_KEY, ValueFrom: !Sub '${AppSecretArn}:STRIPE_SECRET_KEY::'}
+            - {Name: SMTP_HOST, ValueFrom: !Sub '${AppSecretArn}:SMTP_HOST::'}
+            - {Name: SMTP_PORT, ValueFrom: !Sub '${AppSecretArn}:SMTP_PORT::'}
+            - {Name: SMTP_USER, ValueFrom: !Sub '${AppSecretArn}:SMTP_USER::'}
+            - {Name: SMTP_PASS, ValueFrom: !Sub '${AppSecretArn}:SMTP_PASS::'}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+          HealthCheck:
+            Command: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/health || exit 1']
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  # ── ECS service ───────────────────────────────────────────────────────────
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [HTTPListener]
+    Properties:
+      ServiceName: !Sub splitease-${Environment}
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups: [!Ref ECSSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: 3000
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 90
+
+  # ── Auto-scaling ──────────────────────────────────────────────────────────
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: !Ref DesiredCount
+      ResourceId: !Sub service/${Cluster}/${Service.Name}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+
+  ScaleOnCPU:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub splitease-${Environment}-scale-cpu
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  ScaleOnMemory:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub splitease-${Environment}-scale-memory
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 80
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  # ── CloudWatch alarms ─────────────────────────────────────────────────────
+  ALB5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub splitease-${Environment}-alb-5xx-high
+      MetricName: HTTPCode_Target_5XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ALB.LoadBalancerFullName
+
+Outputs:
+  ALBDNSName:
+    Value: !GetAtt ALB.DNSName
+    Export: {Name: !Sub '${AWS::StackName}-ALBDNSName'}
+  ALBHostedZoneId:
+    Value: !GetAtt ALB.CanonicalHostedZoneID
+    Export: {Name: !Sub '${AWS::StackName}-ALBHostedZoneId'}
+  ECSSecurityGroupId:
+    Value: !Ref ECSSecurityGroup
+    Export: {Name: !Sub '${AWS::StackName}-ECSSecurityGroupId'}
+  ClusterName:
+    Value: !Ref Cluster
+    Export: {Name: !Sub '${AWS::StackName}-ClusterName'}
+  ServiceName:
+    Value: !GetAtt Service.Name
+    Export: {Name: !Sub '${AWS::StackName}-ServiceName'}
