@@ -27,7 +27,11 @@ export default async function SheetDetailPage({ params }: Props) {
     include: {
       participants: true,
       transactions: {
-        include: { paidBy: true, splits: { include: { participant: true } } },
+        include: {
+          paidBy: true,
+          splits: { include: { participant: true } },
+          comments: { select: { authorId: true } },
+        },
         orderBy: { createdAt: 'desc' },
       },
     },
@@ -95,6 +99,7 @@ export default async function SheetDetailPage({ params }: Props) {
             transactions={sheet.transactions}
             sheetId={id}
             isCollaborative={sheet.isCollaborative}
+            currentUserId={userId}
           />
         </div>
 

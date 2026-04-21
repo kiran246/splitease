@@ -13,9 +13,11 @@ interface Comment {
 export default function CommentThread({
   sheetId,
   transactionId,
+  initialCommentCount = 0,
 }: {
   sheetId: string;
   transactionId: string;
+  initialCommentCount?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -87,7 +89,7 @@ export default function CommentThread({
         className="text-xs text-gray-500 hover:text-indigo-600 transition flex items-center gap-1"
       >
         <span>💬</span>
-        <span>{comments.length > 0 ? `${comments.length} comment${comments.length !== 1 ? 's' : ''}` : 'Comments'}</span>
+        <span>{comments.length > 0 ? `${comments.length} comment${comments.length !== 1 ? 's' : ''}` : initialCommentCount > 0 ? `${initialCommentCount} comment${initialCommentCount !== 1 ? 's' : ''}` : 'Comments'}</span>
         <span className="text-gray-400">{expanded ? '▲' : '▼'}</span>
       </button>
 
