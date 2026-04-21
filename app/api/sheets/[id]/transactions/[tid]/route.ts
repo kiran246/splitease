@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { z } from 'zod';
 import { calculateSplits } from '@/lib/split';
+import { canEditTransaction } from '@/lib/sheetAccess';
 
 type Params = { params: Promise<{ id: string; tid: string }> };
 
@@ -19,8 +20,9 @@ export async function PUT(req: Request, { params }: Params) {
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id, tid } = await params;
-  const sheet = await prisma.expenseSheet.findFirst({ where: { id, ownerId: session.user.id } });
-  if (!sheet) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!(await canEditTransaction(id, tid, session.user.id))) {
+    return NextResponse.json({ error: 'You can only edit your own transactions' }, { status: 403 });
+  }
 
   const body = await req.json();
   const parsed = schema.safeParse(body);
@@ -49,8 +51,9 @@ export async function DELETE(_req: Request, { params }: Params) {
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id, tid } = await params;
-  const sheet = await prisma.expenseSheet.findFirst({ where: { id, ownerId: session.user.id } });
-  if (!sheet) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!(await canEditTransaction(id, tid, session.user.id))) {
+    return NextResponse.json({ error: 'You can only edit your own transactions' }, { status: 403 });
+  }
 
   await prisma.transaction.delete({ where: { id: tid, sheetId: id } });
   return NextResponse.json({ success: true });

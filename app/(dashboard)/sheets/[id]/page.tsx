@@ -7,25 +7,39 @@ import SettlementPanel from '@/components/settlement/SettlementPanel';
 import TransactionList from '@/components/transactions/TransactionList';
 import ExportPanel from '@/components/sheets/ExportPanel';
 import ImportButton from '@/components/sheets/ImportButton';
+import CollaboratorsPanel from '@/components/sheets/CollaboratorsPanel';
 
 type Props = { params: Promise<{ id: string }> };
 
 export default async function SheetDetailPage({ params }: Props) {
   const { id } = await params;
   const session = await auth();
+  const userId = session!.user!.id!;
 
   const sheet = await prisma.expenseSheet.findFirst({
-    where: { id, ownerId: session!.user!.id! },
+    where: {
+      id,
+      OR: [
+        { ownerId: userId },
+        { collaborators: { some: { userId } } },
+      ],
+    },
     include: {
       participants: true,
       transactions: {
-        include: { paidBy: true, splits: { include: { participant: true } } },
+        include: {
+          paidBy: true,
+          splits: { include: { participant: true } },
+          comments: { select: { authorId: true } },
+        },
         orderBy: { createdAt: 'desc' },
       },
     },
   });
 
   if (!sheet) notFound();
+
+  const isOwner = sheet.ownerId === userId;
 
   const balances = computeBalances(sheet.transactions, sheet.participants);
   const settlements = computeSettlements(balances);
@@ -81,7 +95,12 @@ export default async function SheetDetailPage({ params }: Props) {
               Total: <span className="font-semibold text-gray-900">${totalExpense.toFixed(2)}</span>
             </span>
           </div>
-          <TransactionList transactions={sheet.transactions} sheetId={id} />
+          <TransactionList
+            transactions={sheet.transactions}
+            sheetId={id}
+            isCollaborative={sheet.isCollaborative}
+            currentUserId={userId}
+          />
         </div>
 
         <div className="space-y-4">
@@ -91,6 +110,9 @@ export default async function SheetDetailPage({ params }: Props) {
             participants={sheet.participants}
           />
           <ExportPanel sheetId={id} />
+          {sheet.isCollaborative && (
+            <CollaboratorsPanel sheetId={id} isOwner={isOwner} />
+          )}
         </div>
       </div>
     </div>

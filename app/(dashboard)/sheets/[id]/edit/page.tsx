@@ -14,16 +14,20 @@ export default function EditSheetPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [title, setTitle] = useState('');
+  const [isCollaborative, setIsCollaborative] = useState(false);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [newParticipant, setNewParticipant] = useState({ name: '', email: '', phone: '' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [pendingWhatsapp, setPendingWhatsapp] = useState<{ name: string; url: string } | null>(null);
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/api/sheets/${id}`)
       .then((r) => r.json())
       .then((data) => {
         setTitle(data.title);
+        setIsCollaborative(data.isCollaborative ?? false);
         setParticipants(data.participants);
         setLoading(false);
       });
@@ -42,15 +46,26 @@ export default function EditSheetPage() {
 
   async function addParticipant(e: React.FormEvent) {
     e.preventDefault();
+    setPendingWhatsapp(null);
+    setInviteStatus(null);
+
     const res = await fetch(`/api/sheets/${id}/participants`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newParticipant),
     });
     if (res.ok) {
-      const p = await res.json();
-      setParticipants([...participants, p]);
+      const data = await res.json();
+      setParticipants([...participants, { id: data.id, name: data.name, email: data.email, phone: data.phone }]);
       setNewParticipant({ name: '', email: '', phone: '' });
+
+      if (data.whatsappUrl) {
+        setPendingWhatsapp({ name: data.name, url: data.whatsappUrl });
+      } else if (data.invitationSent === 'email') {
+        setInviteStatus(`Invitation email sent to ${data.email}`);
+      } else if (data.invitationSent === 'email_failed') {
+        setInviteStatus('Participant added, but invitation email could not be sent. Check SMTP settings.');
+      }
     }
   }
 
@@ -88,6 +103,12 @@ export default function EditSheetPage() {
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
         <h2 className="font-semibold text-gray-800">Participants</h2>
 
+        {isCollaborative && (
+          <p className="text-xs text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+            This is a collaborative sheet. Participants with phone numbers will receive a WhatsApp invitation link; those with email addresses will receive an invitation email.
+          </p>
+        )}
+
         <div className="space-y-2">
           {participants.map((p) => (
             <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
@@ -104,6 +125,35 @@ export default function EditSheetPage() {
             </div>
           ))}
         </div>
+
+        {pendingWhatsapp && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-2">
+            <p className="text-sm font-medium text-green-800">
+              {pendingWhatsapp.name} added! Send them a WhatsApp invitation:
+            </p>
+            <a
+              href={pendingWhatsapp.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setPendingWhatsapp(null)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition"
+            >
+              Send WhatsApp Invite
+            </a>
+            <button
+              onClick={() => setPendingWhatsapp(null)}
+              className="ml-3 text-xs text-green-700 underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {inviteStatus && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800">
+            {inviteStatus}
+          </div>
+        )}
 
         <form onSubmit={addParticipant} className="space-y-2 pt-2">
           <p className="text-sm font-medium text-gray-700">Add Person</p>

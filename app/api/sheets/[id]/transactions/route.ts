@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { z } from 'zod';
 import { calculateSplits } from '@/lib/split';
+import { canAccessSheet } from '@/lib/sheetAccess';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -40,8 +41,17 @@ export async function POST(req: Request, { params }: Params) {
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await params;
-  const sheet = await prisma.expenseSheet.findFirst({ where: { id, ownerId: session.user.id } });
+  const userId = session.user.id;
+
+  const sheet = await prisma.expenseSheet.findUnique({ where: { id } });
   if (!sheet) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  if (sheet.isCollaborative) {
+    const allowed = await canAccessSheet(id, userId);
+    if (!allowed) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  } else {
+    if (sheet.ownerId !== userId) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
 
   const body = await req.json();
   const parsed = schema.safeParse(body);
@@ -55,6 +65,7 @@ export async function POST(req: Request, { params }: Params) {
       amount: parsed.data.amount,
       paidById: parsed.data.paidById,
       sheetId: id,
+      createdByUserId: userId,
       splits: { create: splits },
     },
     include: { paidBy: true, splits: { include: { participant: true } } },
