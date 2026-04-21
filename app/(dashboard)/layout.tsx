@@ -14,6 +14,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         </Link>
         <div className="flex items-center gap-4">
           <span className="text-sm text-gray-600">{session.user.name}</span>
+          <Link href="/profile" className="text-sm text-gray-500 hover:text-indigo-600 transition">Profile</Link>
           <form
             action={async () => {
               'use server';
