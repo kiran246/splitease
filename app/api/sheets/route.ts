@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 const createSchema = z.object({
   title: z.string().min(1),
+  isCollaborative: z.boolean().optional(),
 });
 
 export async function GET() {
@@ -32,8 +33,18 @@ export async function POST(req: Request) {
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
   const sheet = await prisma.expenseSheet.create({
-    data: { title: parsed.data.title, ownerId: session.user.id },
+    data: {
+      title: parsed.data.title,
+      ownerId: session.user.id,
+      isCollaborative: parsed.data.isCollaborative ?? false,
+    },
   });
+
+  if (parsed.data.isCollaborative) {
+    await prisma.sheetCollaborator.create({
+      data: { sheetId: sheet.id, userId: session.user.id, role: 'owner' },
+    });
+  }
 
   return NextResponse.json(sheet, { status: 201 });
 }

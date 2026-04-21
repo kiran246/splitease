@@ -12,6 +12,7 @@ interface Participant {
 export default function NewSheetPage() {
   const router = useRouter();
   const [title, setTitle] = useState('');
+  const [isCollaborative, setIsCollaborative] = useState(false);
   const [participants, setParticipants] = useState<Participant[]>([{ name: '', email: '', phone: '' }]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -38,7 +39,7 @@ export default function NewSheetPage() {
     const sheetRes = await fetch('/api/sheets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({ title, isCollaborative }),
     });
 
     if (!sheetRes.ok) {
@@ -87,6 +88,23 @@ export default function NewSheetPage() {
               className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="e.g. Goa Trip 2025"
             />
+          </div>
+
+          <div>
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isCollaborative}
+                onChange={(e) => setIsCollaborative(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <div>
+                <span className="block text-sm font-medium text-gray-700">Make this a collaborative sheet</span>
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  Invite others via WhatsApp to contribute transactions together
+                </span>
+              </div>
+            </label>
           </div>
         </div>
 

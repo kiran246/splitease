@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import CommentThread from './CommentThread';
 
 interface Split {
   id: string;
@@ -22,9 +23,11 @@ interface Transaction {
 export default function TransactionList({
   transactions,
   sheetId,
+  isCollaborative,
 }: {
   transactions: Transaction[];
   sheetId: string;
+  isCollaborative?: boolean;
 }) {
   const router = useRouter();
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -83,6 +86,10 @@ export default function TransactionList({
               </span>
             ))}
           </div>
+
+          {isCollaborative && (
+            <CommentThread sheetId={sheetId} transactionId={tx.id} />
+          )}
         </div>
       ))}
     </div>
