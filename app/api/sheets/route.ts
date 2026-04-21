@@ -32,12 +32,20 @@ export async function POST(req: Request) {
   const parsed = createSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
+  const user = await prisma.user.findUnique({ where: { id: session.user.id } });
+  if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+
   const sheet = await prisma.expenseSheet.create({
     data: {
       title: parsed.data.title,
       ownerId: session.user.id,
       isCollaborative: parsed.data.isCollaborative ?? false,
     },
+  });
+
+  // Auto-add the owner as a participant so they appear in the split list
+  await prisma.participant.create({
+    data: { name: user.name, email: user.email, sheetId: sheet.id },
   });
 
   if (parsed.data.isCollaborative) {

@@ -9,6 +9,11 @@ interface Participant {
   phone: string;
 }
 
+interface PendingInvite {
+  name: string;
+  whatsappUrl: string;
+}
+
 export default function NewSheetPage() {
   const router = useRouter();
   const [title, setTitle] = useState('');
@@ -16,6 +21,8 @@ export default function NewSheetPage() {
   const [participants, setParticipants] = useState<Participant[]>([{ name: '', email: '', phone: '' }]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [createdSheetId, setCreatedSheetId] = useState<string | null>(null);
 
   function addParticipant() {
     setParticipants([...participants, { name: '', email: '', phone: '' }]);
@@ -51,17 +58,68 @@ export default function NewSheetPage() {
     const sheet = await sheetRes.json();
 
     const validParticipants = participants.filter((p) => p.name.trim());
-    await Promise.all(
+    const results = await Promise.all(
       validParticipants.map((p) =>
         fetch(`/api/sheets/${sheet.id}/participants`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(p),
-        })
+        }).then((r) => r.json())
       )
     );
 
+    const whatsappInvites: PendingInvite[] = results
+      .filter((r) => r.whatsappUrl)
+      .map((r) => ({ name: r.name, whatsappUrl: r.whatsappUrl }));
+
+    if (whatsappInvites.length > 0) {
+      setCreatedSheetId(sheet.id);
+      setPendingInvites(whatsappInvites);
+      setLoading(false);
+      return;
+    }
+
     router.push(`/sheets/${sheet.id}`);
+  }
+
+  if (pendingInvites.length > 0 && createdSheetId) {
+    return (
+      <div className="max-w-2xl space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Sheet Created!</h1>
+          <p className="text-gray-500 mt-1">Send WhatsApp invitations to your collaborators.</p>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+          <h2 className="font-semibold text-gray-800">Send Invitations</h2>
+          <p className="text-sm text-gray-600">
+            The following participants have phone numbers. Open each WhatsApp link and tap Send to invite them to the sheet.
+          </p>
+          <div className="space-y-3">
+            {pendingInvites.map((invite, i) => (
+              <div key={i} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3">
+                <span className="font-medium text-gray-800">{invite.name}</span>
+                <a
+                  href={invite.whatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-1.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition"
+                >
+                  Send via WhatsApp
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <button
+          onClick={() => router.push(`/sheets/${createdSheetId}`)}
+          className="px-6 py-2.5 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition"
+        >
+          Go to Sheet →
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -101,7 +159,7 @@ export default function NewSheetPage() {
               <div>
                 <span className="block text-sm font-medium text-gray-700">Make this a collaborative sheet</span>
                 <span className="block text-xs text-gray-500 mt-0.5">
-                  Invite others via WhatsApp to contribute transactions together
+                  Invite others via WhatsApp or email to contribute transactions together
                 </span>
               </div>
             </label>
@@ -119,6 +177,12 @@ export default function NewSheetPage() {
               + Add Person
             </button>
           </div>
+
+          {isCollaborative && (
+            <p className="text-xs text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+              Participants with phone numbers will receive a WhatsApp invite link; those with email will receive an invitation email automatically.
+            </p>
+          )}
 
           <div className="space-y-3">
             {participants.map((p, i) => (

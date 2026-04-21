@@ -48,7 +48,8 @@ model SheetInvitation {
   token     String       @unique @default(cuid())
   sheetId   String
   sheet     ExpenseSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
-  phone     String
+  phone     String?
+  email     String?
   status    String       @default("pending")
   createdAt DateTime     @default(now())
   expiresAt DateTime
