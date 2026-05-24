@@ -21,12 +21,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const user = await prisma.user.findUnique({
           where: { email: parsed.data.email },
         });
-        if (!user) return null;
+        if (!user || !user.isActive) return null;
 
         const valid = await bcrypt.compare(parsed.data.password, user.password);
         if (!valid) return null;
 
         return { id: user.id, email: user.email, name: user.name };
+      },
+    }),
+    Credentials({
+      id: 'impersonate',
+      credentials: { token: { type: 'text' } },
+      async authorize(credentials) {
+        if (!credentials?.token) return null;
+        const record = await prisma.impersonationToken.findUnique({
+          where: { token: credentials.token as string },
+          include: { user: true },
+        });
+        if (!record || record.usedAt || record.expiresAt < new Date()) return null;
+        await prisma.impersonationToken.update({
+          where: { id: record.id },
+          data: { usedAt: new Date() },
+        });
+        return { id: record.user.id, email: record.user.email, name: record.user.name };
       },
     }),
   ],

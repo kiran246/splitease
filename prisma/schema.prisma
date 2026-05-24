@@ -7,14 +7,18 @@ datasource db {
 }
 
 model User {
-  id               String               @id @default(cuid())
-  email            String               @unique
-  name             String
-  password         String
-  sheets           ExpenseSheet[]
-  collaborations   SheetCollaborator[]
-  comments         TransactionComment[]
-  createdAt        DateTime             @default(now())
+  id                  String               @id @default(cuid())
+  email               String               @unique
+  name                String
+  password            String
+  role                String               @default("user")
+  isActive            Boolean              @default(true)
+  sheets              ExpenseSheet[]
+  collaborations      SheetCollaborator[]
+  comments            TransactionComment[]
+  passwordResetTokens PasswordResetToken[]
+  impersonationTokens ImpersonationToken[]
+  createdAt           DateTime             @default(now())
 }
 
 model ExpenseSheet {
@@ -98,4 +102,32 @@ model Split {
   participant   Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
   amount        Float
   percentage    Float?
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  token     String    @unique @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model ImpersonationToken {
+  id        String    @id @default(cuid())
+  token     String    @unique @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model AdminAuditLog {
+  id           String   @id @default(cuid())
+  action       String
+  targetUserId String
+  metadata     String?
+  createdAt    DateTime @default(now())
 }

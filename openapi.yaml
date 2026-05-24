@@ -1,0 +1,1575 @@
+openapi: 3.0.3
+info:
+  title: SplitEase API
+  description: REST API for SplitEase — a collaborative expense-splitting web application.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://your-production-domain.com
+    description: Production
+
+tags:
+  - name: Auth
+    description: Registration and authentication
+  - name: User
+    description: User profile management
+  - name: Sheets
+    description: Expense sheet CRUD
+  - name: Participants
+    description: Sheet participant management
+  - name: Transactions
+    description: Expense transactions within a sheet
+  - name: Comments
+    description: Comments on transactions
+  - name: Settlement
+    description: Balance and settlement calculations
+  - name: Import/Export
+    description: CSV import and PDF/email/WhatsApp export
+  - name: Collaboration
+    description: Invitations and collaborator management
+  - name: Payments
+    description: Stripe payment sessions
+  - name: Health
+    description: Service health check
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: next-auth.session-token
+      description: NextAuth.js session cookie (set automatically on login)
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    ValidationError:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+      required: [id, email, name]
+
+    Participant:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        sheetId:
+          type: string
+      required: [id, name, sheetId]
+
+    Split:
+      type: object
+      properties:
+        id:
+          type: string
+        amount:
+          type: number
+        percentage:
+          type: number
+          nullable: true
+        participantId:
+          type: string
+        transactionId:
+          type: string
+        participant:
+          $ref: '#/components/schemas/Participant'
+      required: [id, amount, participantId, transactionId]
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        amount:
+          type: number
+        paidById:
+          type: string
+        sheetId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        createdByUserId:
+          type: string
+          nullable: true
+        paidBy:
+          $ref: '#/components/schemas/Participant'
+        splits:
+          type: array
+          items:
+            $ref: '#/components/schemas/Split'
+      required: [id, title, amount, paidById, sheetId, createdAt]
+
+    Sheet:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        ownerId:
+          type: string
+        isCollaborative:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, title, ownerId, isCollaborative, createdAt, updatedAt]
+
+    SheetWithDetails:
+      allOf:
+        - $ref: '#/components/schemas/Sheet'
+        - type: object
+          properties:
+            participants:
+              type: array
+              items:
+                $ref: '#/components/schemas/Participant'
+            transactions:
+              type: array
+              items:
+                $ref: '#/components/schemas/Transaction'
+            _count:
+              type: object
+              properties:
+                transactions:
+                  type: integer
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        author:
+          type: object
+          properties:
+            name:
+              type: string
+          required: [name]
+        isOwn:
+          type: boolean
+      required: [id, text, createdAt, author, isOwn]
+
+    Collaborator:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        role:
+          type: string
+          enum: [owner, collaborator]
+        joinedAt:
+          type: string
+          format: date-time
+        user:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+              format: email
+          required: [name, email]
+      required: [id, userId, role, joinedAt, user]
+
+    Invitation:
+      type: object
+      properties:
+        id:
+          type: string
+        token:
+          type: string
+        phone:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+      required: [id, token, phone, expiresAt]
+
+    Settlement:
+      type: object
+      properties:
+        from:
+          type: string
+          description: Participant name who owes money
+        to:
+          type: string
+          description: Participant name who is owed money
+        amount:
+          type: number
+      required: [from, to, amount]
+
+    SettlementResult:
+      type: object
+      properties:
+        totalExpense:
+          type: number
+        balances:
+          type: object
+          additionalProperties:
+            type: number
+          description: "Map of participantId → balance (positive = owed, negative = owes)"
+        settlements:
+          type: array
+          items:
+            $ref: '#/components/schemas/Settlement'
+      required: [totalExpense, balances, settlements]
+
+    TransactionInput:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+        amount:
+          type: number
+          exclusiveMinimum: 0
+        paidById:
+          type: string
+        splitType:
+          type: string
+          enum: [equal, percentage]
+        participants:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              percentage:
+                type: number
+                description: Required when splitType is "percentage"
+            required: [id]
+      required: [title, amount, paidById, splitType, participants]
+
+paths:
+  # ── Auth ────────────────────────────────────────────────────────────────────
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 6
+              required: [name, email, password]
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/{...nextauth}:
+    get:
+      tags: [Auth]
+      summary: NextAuth.js handlers (sign-in, sign-out, session, etc.)
+      parameters:
+        - name: ...nextauth
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: NextAuth.js response (varies by sub-route)
+    post:
+      tags: [Auth]
+      summary: NextAuth.js handlers (credentials sign-in, etc.)
+      parameters:
+        - name: ...nextauth
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: NextAuth.js response (varies by sub-route)
+
+  # ── User ────────────────────────────────────────────────────────────────────
+
+  /api/user/profile:
+    get:
+      tags: [User]
+      summary: Get current user profile
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags: [User]
+      summary: Update current user's name
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+              required: [name]
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Sheets ──────────────────────────────────────────────────────────────────
+
+  /api/sheets:
+    get:
+      tags: [Sheets]
+      summary: List all sheets owned by the current user
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Array of sheets with participants and transaction count
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SheetWithDetails'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [Sheets]
+      summary: Create a new expense sheet
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                isCollaborative:
+                  type: boolean
+                  default: false
+              required: [title]
+      responses:
+        '201':
+          description: Sheet created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sheet'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Sheet ID
+    get:
+      tags: [Sheets]
+      summary: Get a sheet with all participants and transactions
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Full sheet details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SheetWithDetails'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags: [Sheets]
+      summary: Update sheet title (owner only)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+              required: [title]
+      responses:
+        '200':
+          description: Updated sheet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sheet'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Sheets]
+      summary: Delete a sheet and all its data (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Sheet deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Participants ─────────────────────────────────────────────────────────────
+
+  /api/sheets/{id}/participants:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Participants]
+      summary: List participants in a sheet (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Array of participants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Participant'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [Participants]
+      summary: Add a participant to a sheet (owner only)
+      description: |
+        If the sheet is collaborative and an email or phone is provided, an invitation
+        is created and sent automatically. The response may include a `whatsappUrl`
+        and `inviteUrl` for sharing.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+              required: [name]
+      responses:
+        '201':
+          description: Participant added
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Participant'
+                  - type: object
+                    properties:
+                      invitationSent:
+                        type: string
+                        enum: [email, email_failed]
+                        nullable: true
+                      whatsappUrl:
+                        type: string
+                        nullable: true
+                      inviteUrl:
+                        type: string
+                        nullable: true
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}/participants/{pid}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Participant ID
+    put:
+      tags: [Participants]
+      summary: Update a participant (owner only)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                email:
+                  type: string
+                  format: email
+                phone:
+                  type: string
+              required: [name]
+      responses:
+        '200':
+          description: Updated participant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Participant'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet or participant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Participants]
+      summary: Remove a participant from a sheet (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Participant removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet or participant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Transactions ─────────────────────────────────────────────────────────────
+
+  /api/sheets/{id}/transactions:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Transactions]
+      summary: List transactions in a sheet (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Array of transactions with splits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transaction'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [Transactions]
+      summary: Add a transaction to a sheet (owner or collaborator)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '201':
+          description: Transaction created with splits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden (non-collaborative sheet access by non-owner)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}/transactions/{tid}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: tid
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Transaction ID
+    put:
+      tags: [Transactions]
+      summary: Update a transaction (owner or transaction creator)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '200':
+          description: Updated transaction with recalculated splits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden (collaborator attempting to edit another user's transaction)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet or transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Transactions]
+      summary: Delete a transaction (owner or transaction creator)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Transaction deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet or transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Comments ─────────────────────────────────────────────────────────────────
+
+  /api/sheets/{id}/transactions/{tid}/comments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: tid
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Comments]
+      summary: List comments on a transaction (owner or collaborator)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Array of comments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Comment'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [Comments]
+      summary: Add a comment to a transaction (owner or collaborator)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+              required: [text]
+      responses:
+        '201':
+          description: Comment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}/transactions/{tid}/comments/{cid}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: tid
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: cid
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Comment ID
+    delete:
+      tags: [Comments]
+      summary: Delete a comment (comment author only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Comment deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden (not the comment author)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Comment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Settlement ───────────────────────────────────────────────────────────────
+
+  /api/sheets/{id}/settlement:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Settlement]
+      summary: Calculate balances and settlement plan for a sheet (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Settlement calculation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementResult'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Import / Export ──────────────────────────────────────────────────────────
+
+  /api/sheets/{id}/import:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Import/Export]
+      summary: Import transactions from a CSV file (owner only)
+      description: |
+        CSV must have columns: `Title`, `Amount`, `Paid By`, `Participants` (semicolon-separated),
+        `Split Type` (equal|percentage), `Percentages` (semicolon-separated, optional).
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported:
+                    type: integer
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        row:
+                          type: integer
+                        reason:
+                          type: string
+                      required: [row, reason]
+                  importedTitles:
+                    type: array
+                    items:
+                      type: string
+                required: [imported, skipped, importedTitles]
+        '400':
+          description: Missing file or invalid CSV
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}/export:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Import/Export]
+      summary: Download sheet as PDF (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: PDF file download
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              example: 'attachment; filename="Trip-splitease.pdf"'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [Import/Export]
+      summary: Send sheet via email or WhatsApp, or request PDF (owner only)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [email, whatsapp, pdf]
+                email:
+                  type: string
+                  format: email
+                  description: Required when type is "email"
+              required: [type]
+      responses:
+        '200':
+          description: Export result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      success:
+                        type: boolean
+                    description: For email and pdf types
+                  - type: object
+                    properties:
+                      url:
+                        type: string
+                    description: WhatsApp URL for sharing
+        '400':
+          description: Invalid type or missing email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Sheet not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Collaboration ────────────────────────────────────────────────────────────
+
+  /api/sheets/{id}/invitations:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Collaboration]
+      summary: Create an invitation link for a phone number (owner only)
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone:
+                  type: string
+                  minLength: 7
+              required: [phone]
+      responses:
+        '201':
+          description: Invitation created with WhatsApp sharing URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation:
+                    $ref: '#/components/schemas/Invitation'
+                  whatsappUrl:
+                    type: string
+                required: [invitation, whatsappUrl]
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden (not sheet owner)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/invite/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Invitation token (UUID)
+    get:
+      tags: [Collaboration]
+      summary: Look up an invitation by token (public)
+      responses:
+        '200':
+          description: Invitation details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sheetId:
+                    type: string
+                  sheetTitle:
+                    type: string
+                  token:
+                    type: string
+                  phone:
+                    type: string
+                required: [sheetId, sheetTitle, token, phone]
+        '404':
+          description: Invitation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Invitation expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/invite/{token}/accept:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Collaboration]
+      summary: Accept an invitation and become a collaborator
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Invitation accepted, returns target sheet ID
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sheetId:
+                    type: string
+                required: [sheetId]
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Invitation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Invitation expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}/collaborators:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Collaboration]
+      summary: List collaborators on a sheet (owner or collaborator)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Array of collaborators
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Collaborator'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/sheets/{id}/collaborators/{uid}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: uid
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User ID of the collaborator to remove
+    delete:
+      tags: [Collaboration]
+      summary: Remove a collaborator from a sheet (owner only)
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Collaborator removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden (not sheet owner)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Payments ─────────────────────────────────────────────────────────────────
+
+  /api/payments/create-session:
+    post:
+      tags: [Payments]
+      summary: Create a Stripe checkout session for a settlement payment
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: number
+                  exclusiveMinimum: 0
+                  description: Amount in the app's currency unit
+                fromName:
+                  type: string
+                toName:
+                  type: string
+                toEmail:
+                  type: string
+                  format: email
+                sheetId:
+                  type: string
+              required: [amount, fromName, toName, toEmail, sheetId]
+      responses:
+        '200':
+          description: Stripe checkout URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                required: [url]
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ── Health ────────────────────────────────────────────────────────────────────
+
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Service and database health check
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  db:
+                    type: string
+                    enum: [ok]
+                  ts:
+                    type: string
+                    format: date-time
+                required: [status, db, ts]
+        '503':
+          description: Service unavailable (database unreachable)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [error]
+                  db:
+                    type: string
+                    enum: [unreachable]
+                required: [status, db]

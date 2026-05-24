@@ -39,6 +39,31 @@ export async function sendInvitationEmail({
   });
 }
 
+export async function sendPasswordResetEmail({
+  to,
+  name,
+  resetUrl,
+}: {
+  to: string;
+  name: string;
+  resetUrl: string;
+}) {
+  await transporter.sendMail({
+    from: process.env.SMTP_USER,
+    to,
+    subject: 'Reset your SplitEase password',
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        <h2 style="color:#4f46e5;">Password Reset</h2>
+        <p>Hi ${name},</p>
+        <p>An admin has requested a password reset for your account. Click the button below to set a new password:</p>
+        <a href="${resetUrl}" style="display:inline-block;padding:12px 24px;background:#4f46e5;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Reset Password</a>
+        <p style="margin-top:16px;color:#6b7280;font-size:13px;">This link expires in 1 hour. If you didn't request this, you can safely ignore it.</p>
+      </div>
+    `,
+  });
+}
+
 export async function sendSheetEmail({
   to,
   subject,

@@ -23,6 +23,7 @@ export default function NewTransactionPage() {
     fetch(`/api/sheets/${id}/participants`)
       .then((r) => r.json())
       .then((ps: Participant[]) => {
+        if (!Array.isArray(ps)) return;
         setParticipants(ps);
         setSelected(new Set(ps.map((p) => p.id)));
       });
