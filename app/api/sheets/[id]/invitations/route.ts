@@ -45,7 +45,7 @@ export async function POST(req: Request, { params }: Params) {
     select: { id: true, token: true, phone: true, expiresAt: true },
   });
 
-  const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
+  const { origin: appUrl } = new URL(process.env.NEXTAUTH_URL ?? req.url);
   const inviteUrl = `${appUrl}/invite/${token}`;
   const waText = `You've been invited to collaborate on a SplitEase expense sheet! Join here: ${inviteUrl}`;
   const whatsappUrl = `https://wa.me/${phone}?text=${encodeURIComponent(waText)}`;

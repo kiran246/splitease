@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   const parsed = schema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
-  const baseUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
+  const { origin: baseUrl } = new URL(process.env.NEXTAUTH_URL ?? req.url);
 
   const checkoutSession = await createPaymentSession({
     ...parsed.data,

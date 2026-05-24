@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { z } from 'zod';
 import { sendInvitationEmail } from '@/lib/email';
+import { canAccessSheet } from '@/lib/sheetAccess';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -17,8 +18,11 @@ export async function GET(_req: Request, { params }: Params) {
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await params;
+  if (!(await canAccessSheet(id, session.user.id)))
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
   const sheet = await prisma.expenseSheet.findFirst({
-    where: { id, ownerId: session.user.id },
+    where: { id },
     include: { owner: true },
   });
   if (!sheet) return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -68,7 +72,7 @@ export async function POST(req: Request, { params }: Params) {
         data: { sheetId: id, email, phone, expiresAt },
       });
 
-      const baseUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
+      const { origin: baseUrl } = new URL(process.env.NEXTAUTH_URL ?? req.url);
       const inviteUrl = `${baseUrl}/invite/${invitation.token}`;
 
       if (email) {
