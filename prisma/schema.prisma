@@ -74,6 +74,7 @@ model Transaction {
   id            String               @id @default(cuid())
   title         String
   amount        Float
+  date          DateTime?
   paidById      String
   paidBy        Participant          @relation(fields: [paidById], references: [id])
   sheetId       String

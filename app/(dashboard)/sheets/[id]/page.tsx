@@ -65,6 +65,12 @@ export default async function SheetDetailPage({ params }: Props) {
           </Link>
           <ImportButton sheetId={id} />
           <Link
+            href={`/sheets/${id}/bulk-entry`}
+            className="px-4 py-2 border border-indigo-300 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-50 transition"
+          >
+            Bulk Entry
+          </Link>
+          <Link
             href={`/sheets/${id}/transactions/new`}
             className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition"
           >
