@@ -26,7 +26,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const valid = await bcrypt.compare(parsed.data.password, user.password);
         if (!valid) return null;
 
-        return { id: user.id, email: user.email, name: user.name };
+        return { id: user.id, email: user.email, name: user.name, role: user.role };
       },
     }),
     Credentials({
@@ -43,7 +43,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           where: { id: record.id },
           data: { usedAt: new Date() },
         });
-        return { id: record.user.id, email: record.user.email, name: record.user.name };
+        return { id: record.user.id, email: record.user.email, name: record.user.name, role: record.user.role };
       },
     }),
   ],
