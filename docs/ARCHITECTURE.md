@@ -1,7 +1,7 @@
 # SplitEase — Architecture Review Document
 
-**Version:** 2.0  
-**Date:** 2026-05-23  
+**Version:** 2.1  
+**Date:** 2026-05-30  
 **Tech Lead:** Alex Chen  
 **Reviewer:** Claude Code  
 **Branch:** `feature/collaborative-sheets`
@@ -101,12 +101,25 @@ splitease_new/
 │   │           └── transactions/
 │   │               ├── new/page.tsx
 │   │               └── [tid]/edit/page.tsx
+│   ├── actions/                           # Next.js Server Actions
+│   │   └── admin.ts                       # Admin CRUD, sheet management, audit logging
+│   ├── admin/                             # Admin console (role-gated: admin only)
+│   │   ├── layout.tsx                     # Role guard + sidebar shell
+│   │   ├── page.tsx                       # Overview: stats + recent audit log
+│   │   ├── AdminNav.tsx                   # Sidebar nav (client component)
+│   │   ├── users/
+│   │   │   ├── page.tsx                   # User list
+│   │   │   ├── UsersTable.tsx             # Interactive table with edit/disable/impersonate/delete
+│   │   │   └── new/page.tsx              # Create user form
+│   │   └── sheets/
+│   │       ├── page.tsx                   # Sheet list (all users)
+│   │       └── SheetsTable.tsx            # Filter by owner, delete, clear-all
 │   ├── api/
 │   │   ├── auth/
 │   │   │   ├── [...nextauth]/route.ts
 │   │   │   ├── register/route.ts
 │   │   │   └── reset-password/route.ts  # (new)
-│   │   ├── admin/                       # (new) bearer-token protected
+│   │   ├── admin/                       # (new) bearer-token protected REST API
 │   │   │   └── users/
 │   │   │       ├── route.ts
 │   │   │       └── [uid]/
@@ -250,14 +263,34 @@ Admin Impersonation:
 | Sheet access | `canAccessSheet(sheetId, userId)` — owner OR collaborator | Sheet endpoints |
 | Sheet ownership | `isSheetOwner(sheetId, userId)` — owner only | Delete sheet, manage collaborators |
 | Transaction edit | `canEditTransaction(sheetId, tid, userId)` — owner OR creator | PUT/DELETE transactions |
-| Admin access | `isAdminRequest(req)` — `Authorization: Bearer <ADMIN_API_KEY>` | `/api/admin/*` |
+| Admin API access | `isAdminRequest(req)` — `Authorization: Bearer <ADMIN_API_KEY>` | `/api/admin/*` |
+| Admin UI access | `session.user.role === 'admin'` — redirect to `/dashboard` if not | `app/admin/layout.tsx` |
+| Admin server actions | `assertAdmin()` — checks `session.user.role` | `app/actions/admin.ts` |
 | Comment delete | `comment.authorId === userId` inline check | DELETE comment |
 
-### 5.3 Security Observations
+### 5.3 JWT Role Propagation
+
+The `role` field is written into the JWT in `auth.config.ts` and read back onto `session.user.role` in the session callback. This means any server component or API route can check `session.user.role` without an extra DB query. The admin UI layout (`app/admin/layout.tsx`) and all server actions in `app/actions/admin.ts` rely on this.
+
+```typescript
+// auth.config.ts — jwt callback
+if (user) {
+  token.id = user.id;
+  token.role = user.role ?? 'user';
+}
+
+// session callback
+session.user.role = (token.role as string) ?? 'user';
+```
+
+`types/next-auth.d.ts` extends the `Session` and `JWT` types to include `role` and `id`.
+
+### 5.4 Security Observations
 
 **Strengths:**
 - JWTs are signed and stored in httpOnly cookies (XSS-resistant)
-- Admin endpoints use a completely separate auth mechanism (bearer token)
+- Admin REST endpoints use a completely separate auth mechanism (bearer token)
+- Admin UI and server actions use session role check (`role === 'admin'`) — no bearer token needed for UI flows
 - Impersonation tokens are short-lived (15 min), single-use, and audit-logged
 - Password reset tokens are short-lived (1 hr) and single-use
 
@@ -302,12 +335,31 @@ Admin Impersonation:
 | Export | GET/POST | `/api/sheets/[id]/export` | Session + owner |
 | Import | POST | `/api/sheets/[id]/import` | Session + owner |
 | Payments | POST | `/api/payments/create-session` | Session |
-| Admin | GET | `/api/admin/users` | Bearer token |
-| Admin | POST | `/api/admin/users/[uid]/reset-password` | Bearer token |
-| Admin | POST | `/api/admin/users/[uid]/impersonate` | Bearer token |
-| Admin | PATCH | `/api/admin/users/[uid]/status` | Bearer token |
+| Admin API | GET | `/api/admin/users` | Bearer token |
+| Admin API | POST | `/api/admin/users/[uid]/reset-password` | Bearer token |
+| Admin API | POST | `/api/admin/users/[uid]/impersonate` | Bearer token |
+| Admin API | PATCH | `/api/admin/users/[uid]/status` | Bearer token |
+| Admin UI | GET | `/admin` | Session + role=admin |
+| Admin UI | GET | `/admin/users` | Session + role=admin |
+| Admin UI | GET | `/admin/users/new` | Session + role=admin |
+| Admin UI | GET | `/admin/sheets` | Session + role=admin |
 | Docs | GET | `/api/docs` | Public |
 | Health | GET | `/api/health` | Public |
+
+### 6.3 Server Actions (`app/actions/admin.ts`)
+
+All admin mutations from the UI use Next.js Server Actions rather than API routes. Each action calls `assertAdmin()` before executing.
+
+| Action | Description |
+|--------|-------------|
+| `createUser` | Create a new user with bcrypt-hashed password |
+| `updateUser` | Update name, email, or role |
+| `toggleUserStatus` | Enable or disable a user account |
+| `deleteUser` | Permanently delete a user and cascade their data |
+| `generateImpersonationLink` | Create a 15-min impersonation token and return the URL |
+| `resetUserPassword` | Create a 1-hr reset token and send email |
+| `deleteSheet` | Delete a single sheet by ID |
+| `clearUserSheets` | Delete all sheets owned by a given user; returns count |
 
 ### 6.3 Documentation
 Full OpenAPI 3.0.3 spec is in `openapi.yaml` (1576 lines). All endpoints, request/response schemas, and error codes are documented. Served via Swagger UI at `/docs`.

@@ -1,36 +1,119 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SplitEase
 
-## Getting Started
+Web-based expense splitting app. Track shared expenses, calculate fair splits, and settle debts with the minimum number of transfers.
 
-First, run the development server:
+**Stack:** Next.js 16 · TypeScript · Tailwind CSS · Prisma 7 · NextAuth v5 · SQLite (dev) / PostgreSQL (prod)
+
+---
+
+## Quick Start
 
 ```bash
+# 1. Install dependencies
+npm install
+
+# 2. Create .env (copy from example and fill in secrets)
+cp .env.example .env
+
+# 3. Create the database and run migrations
+npm run db:migrate
+
+# 4. Start the dev server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment Variables
 
-## Learn More
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | SQLite: `file:./dev.db` · PostgreSQL: `postgresql://...` |
+| `NEXTAUTH_SECRET` | Yes | Random 32+ char string for JWT signing |
+| `AUTH_TRUST_HOST` | Dev | Set to `1` in local dev; use `AUTH_URL` in production |
+| `ADMIN_API_KEY` | Yes | Bearer token for REST admin endpoints (≥ 32 chars) |
+| `SMTP_HOST` | Yes | SMTP server for email (invitation, password reset) |
+| `SMTP_PORT` | Yes | SMTP port (587 for TLS) |
+| `SMTP_USER` | Yes | SMTP username |
+| `SMTP_PASS` | Yes | SMTP password or app password |
+| `STRIPE_SECRET_KEY` | Optional | Stripe secret key for payment sessions |
+| `STRIPE_PUBLISHABLE_KEY` | Optional | Stripe publishable key |
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Key Commands
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run dev          # Dev server at localhost:3000
+npm test             # Unit tests (Jest)
+npm run db:migrate   # Run Prisma migrations
+npm run db:generate  # Regenerate Prisma client after schema changes
+npm run db:studio    # Prisma Studio GUI (direct DB browser)
+npm run build        # Production build
+```
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Creating an Admin User
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+After running migrations, create your first admin user:
+
+```bash
+node -e "
+const { createClient } = require('@libsql/client');
+const bcrypt = require('bcryptjs');
+const client = createClient({ url: 'file:./dev.db' });
+const hash = bcrypt.hashSync('yourpassword', 12);
+client.execute({
+  sql: \"INSERT INTO User (id, email, name, password, role, isActive, createdAt) VALUES (lower(hex(randomblob(16))), 'admin@example.com', 'Admin', ?, 'admin', 1, datetime('now'))\",
+  args: [hash]
+}).then(() => { console.log('Done'); process.exit(0); });
+"
+```
+
+Log in at `/login`, then navigate to `/admin` for the admin console.
+
+---
+
+## Admin Console
+
+`/admin` — role-gated to users with `role = admin`.
+
+| Page | Description |
+|------|-------------|
+| `/admin` | Overview: user/sheet stats, recent audit log |
+| `/admin/users` | List, search, filter, edit, enable/disable, impersonate, reset password, delete users |
+| `/admin/users/new` | Create a new user |
+| `/admin/sheets` | List all sheets across all users; filter by owner; delete individual sheets or clear all sheets for a user |
+
+All destructive admin actions are logged to `AdminAuditLog`.
+
+---
+
+## Architecture
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full architecture review.
+
+| Document | Description |
+|----------|-------------|
+| [`docs/PRD.md`](docs/PRD.md) | Product requirements and user stories |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, data model, auth flows, API reference |
+| [`docs/TDD.md`](docs/TDD.md) | Test specifications and coverage goals |
+| [`docs/TECH_DESIGN.md`](docs/TECH_DESIGN.md) | Technical design decisions |
+| [`docs/TEAM.md`](docs/TEAM.md) | Team norms and contribution guidelines |
+| [`openapi.yaml`](openapi.yaml) | OpenAPI 3.0 spec (also served at `/api/docs`, UI at `/docs`) |
+
+---
+
+## Deployment
+
+AWS CloudFormation templates are in [`infrastructure/`](infrastructure/). The stack provisions ECS Fargate + RDS PostgreSQL + ALB with HTTPS.
+
+For Docker:
+
+```bash
+docker build -t splitease .
+docker run -p 3000:3000 --env-file .env splitease
+```

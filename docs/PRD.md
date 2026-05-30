@@ -1,7 +1,7 @@
 # SplitEase — Product Requirements Document
 
-**Version:** 2.0  
-**Date:** 2026-05-23  
+**Version:** 2.1  
+**Date:** 2026-05-30  
 **Product Owner:** Priya Sharma  
 **Status:** Living Document — reflects current implementation on `feature/collaborative-sheets`
 
@@ -163,6 +163,13 @@ SplitEase solves this by making the sheet owner the single accountable party, ke
 | ADMIN-04 | Admin can impersonate a user to diagnose support issues | Must | Done |
 | ADMIN-05 | Admin can enable/disable user accounts | Must | Done |
 | ADMIN-06 | All admin actions persisted to AdminAuditLog | Must | Done |
+| ADMIN-07 | Web-based admin console at `/admin` (role-gated, no bearer token required) | Must | Done |
+| ADMIN-08 | Admin console shows platform stats: total users, active/inactive, sheet count | Should | Done |
+| ADMIN-09 | Admin can view all expense sheets across all users with owner, type, and transaction count | Must | Done |
+| ADMIN-10 | Admin can delete any individual sheet | Must | Done |
+| ADMIN-11 | Admin can clear all sheets owned by a specific user in one action | Must | Done |
+| ADMIN-12 | Admin console link shown in dashboard nav for users with `role = admin` | Should | Done |
+| ADMIN-13 | Admin role is propagated through JWT and available on `session.user.role` | Must | Done |
 
 ### 5.9 API Documentation
 
@@ -323,6 +330,23 @@ Acceptance Criteria:
 - Confirming signs the admin in as the target user for 15 minutes
 - Token cannot be reused after first use
 - Impersonation event is written to AdminAuditLog
+```
+
+**US-041 — Admin Console**
+```
+As an admin, I want a web UI to manage users and sheets
+so that I can perform common tasks without using the API directly.
+
+Acceptance Criteria:
+- /admin redirects non-admin users to /dashboard
+- Overview page shows user count (total, active, inactive) and sheet count
+- Users page lists all users with search, role filter, and status filter
+- Admin can edit user name/email/role, enable/disable, reset password, impersonate, or delete from the UI
+- Sheets page lists all sheets with owner info, type, transaction count, participant count, collaborator count
+- Admin can filter sheets by owner and delete any sheet
+- "Clear all sheets" for a selected user deletes all their owned sheets in one action
+- All destructive actions show a confirmation dialog before executing
+- Audit log entries for sheet deletion and clear-all are visible on the overview page
 ```
 
 ---

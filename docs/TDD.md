@@ -206,7 +206,7 @@ describe('sheetAccess - edge cases', () => {
 })
 ```
 
-### 5.4 `lib/adminAuth.ts` (new — no tests exist)
+### 5.4 `lib/adminAuth.ts` (no tests exist)
 
 ```typescript
 describe('isAdminRequest', () => {
@@ -215,6 +215,55 @@ describe('isAdminRequest', () => {
   it('returns false when header has wrong token')
   it('returns false when header format is not "Bearer <token>"')
   it('returns false when ADMIN_API_KEY env var is not set')
+})
+```
+
+### 5.6 `app/actions/admin.ts` (no tests exist)
+
+Mock `lib/db` (prisma), `lib/auth` (auth), and `lib/email` (sendPasswordResetEmail).
+
+```typescript
+describe('createUser', () => {
+  it('hashes password and creates user')
+  it('throws when email already exists')
+  it('throws when called by non-admin')
+})
+
+describe('toggleUserStatus', () => {
+  it('enables user and writes audit log with action=enable_user')
+  it('disables user and writes audit log with action=disable_user')
+  it('throws when called by non-admin')
+})
+
+describe('deleteUser', () => {
+  it('deletes user by id')
+  it('throws when called by non-admin')
+})
+
+describe('deleteSheet', () => {
+  it('deletes sheet and writes audit log with action=delete_sheet')
+  it('throws when sheet does not exist')
+  it('throws when called by non-admin')
+})
+
+describe('clearUserSheets', () => {
+  it('deletes all sheets for userId and returns count')
+  it('writes audit log with action=clear_user_sheets and the count in metadata')
+  it('returns 0 when user has no sheets')
+  it('throws when called by non-admin')
+})
+
+describe('generateImpersonationLink', () => {
+  it('creates ImpersonationToken with 15-minute expiry')
+  it('writes audit log with action=impersonate')
+  it('returns URL containing the token')
+})
+
+describe('resetUserPassword', () => {
+  it('creates PasswordResetToken with 1-hour expiry')
+  it('calls sendPasswordResetEmail and returns emailSent=true on success')
+  it('returns emailSent=false when email throws')
+  it('throws when user not found')
 })
 ```
 
@@ -410,6 +459,25 @@ describe('PATCH /api/admin/users/[uid]/status', () => {
 })
 ```
 
+### 6.10 Admin Server Actions (`__tests__/unit/adminActions.test.ts`)
+
+Server actions are tested as plain async functions — no HTTP layer needed.
+
+```typescript
+// Mock lib/db and lib/auth
+describe('deleteSheet (server action)', () => {
+  it('deletes sheet and creates audit log entry')
+  it('throws "Sheet not found" for unknown id')
+  it('throws "Unauthorized" when session role is not admin')
+})
+
+describe('clearUserSheets (server action)', () => {
+  it('calls deleteMany with ownerId filter and returns count')
+  it('creates audit log entry with count in metadata')
+  it('throws "Unauthorized" when session role is not admin')
+})
+```
+
 ### 6.8 Export / Import Routes (`__tests__/integration/export.test.ts`)
 
 ```typescript
@@ -476,6 +544,42 @@ describe('Impersonation confirmation page', () => {
   it('shows expiry countdown')
   it('calls impersonate API on confirm')
   it('shows error on expired token')
+})
+```
+
+### 7.4 `app/admin/users/UsersTable.tsx`
+
+```typescript
+describe('UsersTable', () => {
+  it('filters users by search query matching name')
+  it('filters users by search query matching email')
+  it('filters users by role')
+  it('filters users by active/inactive status')
+  it('opens edit modal with pre-filled form when edit button clicked')
+  it('shows confirm dialog before deleting user')
+  it('calls toggleUserStatus with correct args when activate/deactivate clicked')
+  it('copies impersonation link to clipboard on impersonate')
+  it('copies reset link to clipboard on reset password')
+  it('shows success toast on successful action')
+  it('shows error toast on failed action')
+})
+```
+
+### 7.5 `app/admin/sheets/SheetsTable.tsx`
+
+```typescript
+describe('SheetsTable', () => {
+  it('filters sheets by search query matching title')
+  it('filters sheets by search query matching owner name')
+  it('filters sheets by owner dropdown')
+  it('shows "Clear all sheets for [name]" button only when an owner is selected')
+  it('hides clear button when selected user has no sheets in filtered results')
+  it('shows confirm dialog before deleting a single sheet')
+  it('shows confirm dialog before clearing all sheets for a user')
+  it('calls deleteSheet with correct sheetId on confirm')
+  it('calls clearUserSheets with correct userId on confirm')
+  it('shows success toast with deleted count after clear-all')
+  it('shows error toast on failed delete')
 })
 ```
 
