@@ -26,6 +26,12 @@ const styles = StyleSheet.create({
   cellText:   { fontSize: 9, color: '#374151' },
   sharedEqual: { fontSize: 8, color: '#4338ca' },
   sharedSplit: { fontSize: 8, color: '#374151' },
+  summaryRow: { flexDirection: 'row', padding: '5 8', borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
+  colSummaryName:   { flex: 2.5 },
+  colSummaryAmount: { flex: 1.2, textAlign: 'right' },
+  netPositive: { fontSize: 9, color: '#059669', fontFamily: 'Helvetica-Bold' },
+  netNegative: { fontSize: 9, color: '#dc2626', fontFamily: 'Helvetica-Bold' },
+  netZero:     { fontSize: 9, color: '#6b7280' },
   settlementRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: '#fffbeb', borderRadius: 6, padding: '7 10', marginBottom: 5,
@@ -73,7 +79,29 @@ function sharedLabel(splits: Split[], total: number): { equal: boolean; label: s
   return { equal: false, label: parts };
 }
 
+function buildPersonSummary(transactions: PdfTransaction[]) {
+  const paid = new Map<string, number>();
+  const owed = new Map<string, number>();
+
+  for (const tx of transactions) {
+    const payer = tx.paidBy.name;
+    paid.set(payer, (paid.get(payer) ?? 0) + tx.amount);
+    for (const s of tx.splits) {
+      const name = s.participant.name;
+      owed.set(name, (owed.get(name) ?? 0) + s.amount);
+    }
+  }
+
+  const names = Array.from(new Set([...paid.keys(), ...owed.keys()])).sort();
+  return names.map((name) => {
+    const p = paid.get(name) ?? 0;
+    const o = owed.get(name) ?? 0;
+    return { name, paid: p, owed: o, net: Math.round((p - o) * 100) / 100 };
+  });
+}
+
 function SheetDocument({ title, total, transactions, settlements, generatedAt }: SheetPdfProps) {
+  const personSummary = buildPersonSummary(transactions);
   return (
     <Document>
       <Page size="A4" style={styles.page}>
@@ -107,6 +135,29 @@ function SheetDocument({ title, total, transactions, settlements, generatedAt }:
             </View>
           );
         })}
+
+        <Text style={styles.sectionTitle}>Summary by Person</Text>
+        <View style={styles.tableHeader}>
+          <Text style={[styles.headerText, styles.colSummaryName]}>PERSON</Text>
+          <Text style={[styles.headerText, styles.colSummaryAmount]}>TOTAL PAID</Text>
+          <Text style={[styles.headerText, styles.colSummaryAmount]}>TOTAL OWED</Text>
+          <Text style={[styles.headerText, styles.colSummaryAmount]}>NET</Text>
+        </View>
+        {personSummary.map((row, i) => (
+          <View key={i} style={styles.summaryRow}>
+            <Text style={[styles.cellText, styles.colSummaryName, { fontFamily: 'Helvetica-Bold' }]}>
+              {row.name}
+            </Text>
+            <Text style={[styles.cellText, styles.colSummaryAmount]}>${row.paid.toFixed(2)}</Text>
+            <Text style={[styles.cellText, styles.colSummaryAmount]}>${row.owed.toFixed(2)}</Text>
+            <Text style={[
+              row.net > 0.005 ? styles.netPositive : row.net < -0.005 ? styles.netNegative : styles.netZero,
+              styles.colSummaryAmount,
+            ]}>
+              {row.net > 0.005 ? '+' : ''}{row.net.toFixed(2)}
+            </Text>
+          </View>
+        ))}
 
         <Text style={styles.sectionTitle}>
           {settlements.length === 0
