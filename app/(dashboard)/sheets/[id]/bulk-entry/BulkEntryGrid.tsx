@@ -9,24 +9,30 @@ type Row = {
   key: number;
   date: string;
   title: string;
+  amount: string;
   paidById: string;
-  amounts: Record<string, string>; // participantId → raw input string
+  shared: Set<string>; // participant IDs who share this expense
 };
 
 type RowError = { row: number; error: string };
 
 let rowCounter = 0;
+
 function newRow(participants: Participant[]): Row {
-  const amounts: Record<string, string> = {};
-  for (const p of participants) amounts[p.id] = '';
-  return { key: rowCounter++, date: '', title: '', paidById: '', amounts };
+  return {
+    key: rowCounter++,
+    date: '',
+    title: '',
+    amount: '',
+    paidById: '',
+    shared: new Set(participants.map((p) => p.id)), // all checked by default
+  };
 }
 
-function rowTotal(row: Row): number {
-  return Object.values(row.amounts).reduce((sum, v) => {
-    const n = parseFloat(v);
-    return sum + (isNaN(n) || n < 0 ? 0 : n);
-  }, 0);
+function perPersonAmount(row: Row): number {
+  const total = parseFloat(row.amount);
+  if (isNaN(total) || total <= 0 || row.shared.size === 0) return 0;
+  return Math.round((total / row.shared.size) * 100) / 100;
 }
 
 export default function BulkEntryGrid({
@@ -59,29 +65,32 @@ export default function BulkEntryGrid({
     setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.key !== key) : prev));
   }, []);
 
-  function updateRow(key: number, field: keyof Omit<Row, 'key' | 'amounts'>, value: string) {
+  function updateRow(key: number, field: keyof Omit<Row, 'key' | 'shared'>, value: string) {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)));
   }
 
-  function updateAmount(key: number, participantId: string, value: string) {
+  function toggleParticipant(key: number, participantId: string) {
     setRows((prev) =>
-      prev.map((r) =>
-        r.key === key ? { ...r, amounts: { ...r.amounts, [participantId]: value } } : r
-      )
+      prev.map((r) => {
+        if (r.key !== key) return r;
+        const next = new Set(r.shared);
+        if (next.has(participantId)) next.delete(participantId);
+        else next.add(participantId);
+        return { ...r, shared: next };
+      })
     );
   }
 
-  // Validate a row client-side; returns error string or null
   function validateRow(row: Row): string | null {
     if (!row.title.trim()) return 'Expense name is required';
     if (!row.paidById) return '"Who Paid" is required';
-    const total = rowTotal(row);
-    if (total <= 0) return 'Total must be greater than 0';
+    const total = parseFloat(row.amount);
+    if (isNaN(total) || total <= 0) return 'Amount must be greater than 0';
+    if (row.shared.size === 0) return 'Select at least one person to share with';
     return null;
   }
 
   async function handleSave() {
-    // Client-side validation pass
     const clientErrors = new Map<number, string>();
     rows.forEach((row, i) => {
       const err = validateRow(row);
@@ -98,15 +107,23 @@ export default function BulkEntryGrid({
     setSaving(true);
 
     try {
-      const payload = rows.map((row) => ({
-        date: row.date || undefined,
-        title: row.title.trim(),
-        paidById: row.paidById,
-        splits: participants.map((p) => ({
-          participantId: p.id,
-          amount: parseFloat(row.amounts[p.id] || '0') || 0,
-        })),
-      }));
+      const payload = rows.map((row) => {
+        const total = parseFloat(row.amount);
+        const sharedIds = [...row.shared];
+        const each = Math.round((total / sharedIds.length) * 100) / 100;
+        // Distribute rounding remainder to the first participant
+        const remainder = Math.round((total - each * sharedIds.length) * 100) / 100;
+
+        return {
+          date: row.date || undefined,
+          title: row.title.trim(),
+          paidById: row.paidById,
+          splits: sharedIds.map((id, idx) => ({
+            participantId: id,
+            amount: idx === 0 ? each + remainder : each,
+          })),
+        };
+      });
 
       const res = await fetch(`/api/sheets/${sheetId}/transactions/bulk`, {
         method: 'POST',
@@ -122,20 +139,22 @@ export default function BulkEntryGrid({
       }
 
       if (data.errors?.length > 0) {
-        const serverErrors = new Map<number, string>();
-        for (const e of data.errors as RowError[]) {
-          serverErrors.set(e.row, e.error);
-        }
-        setRowErrors(serverErrors);
+        const errorRowIndices = new Set((data.errors as RowError[]).map((e) => e.row));
 
         if (data.created > 0) {
-          notify('partial', `Saved ${data.created} expense${data.created > 1 ? 's' : ''}. Fix ${data.errors.length} row error${data.errors.length > 1 ? 's' : ''}.`);
-          // Remove successfully saved rows (those without errors)
-          const errorRowIndices = new Set(data.errors.map((e: RowError) => e.row));
-          setRows((prev) => prev.filter((_, i) => errorRowIndices.has(i)));
-          setRowErrors(new Map(data.errors.map((e: RowError, newIdx: number) => [newIdx, e.error])));
+          notify('partial', `Saved ${data.created} expense${data.created > 1 ? 's' : ''}. Fix ${data.errors.length} remaining error${data.errors.length > 1 ? 's' : ''}.`);
+          const newServerErrors = new Map<number, string>();
+          const failedRows = rows.filter((_, i) => errorRowIndices.has(i));
+          (data.errors as RowError[]).forEach((e, newIdx) => {
+            newServerErrors.set(newIdx, e.error);
+          });
+          setRows(failedRows);
+          setRowErrors(newServerErrors);
         } else {
-          notify('error', `Failed to save ${data.errors.length} row${data.errors.length > 1 ? 's' : ''}`);
+          const serverErrors = new Map<number, string>();
+          (data.errors as RowError[]).forEach((e) => serverErrors.set(e.row, e.error));
+          setRowErrors(serverErrors);
+          notify('error', `Failed to save. Fix ${data.errors.length} row error${data.errors.length > 1 ? 's' : ''}.`);
         }
       } else {
         notify('success', `Saved ${data.created} expense${data.created > 1 ? 's' : ''} successfully`);
@@ -150,11 +169,13 @@ export default function BulkEntryGrid({
   }
 
   const toastColor =
-    toast?.type === 'success'
-      ? 'bg-green-600'
-      : toast?.type === 'partial'
-      ? 'bg-yellow-600'
-      : 'bg-red-600';
+    toast?.type === 'success' ? 'bg-green-600' :
+    toast?.type === 'partial' ? 'bg-yellow-600' : 'bg-red-600';
+
+  const grandTotal = rows.reduce((s, r) => {
+    const n = parseFloat(r.amount);
+    return s + (isNaN(n) ? 0 : n);
+  }, 0);
 
   return (
     <div className="space-y-4">
@@ -164,43 +185,30 @@ export default function BulkEntryGrid({
         </div>
       )}
 
-      {/* Scrollable grid */}
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="text-sm border-collapse min-w-full">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-32">
-                Date
-              </th>
-              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-48">
-                Expense
-              </th>
-              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-36">
-                Who Paid
-              </th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-32">Date</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-44">Expense</th>
+              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-28">Amount</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-36">Who Paid</th>
               {participants.map((p) => (
-                <th
-                  key={p.id}
-                  className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-28"
-                >
+                <th key={p.id} className="px-3 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-24">
                   {p.name}
                 </th>
               ))}
-              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-24">
-                Total
-              </th>
+              <th className="px-3 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap w-24">Each Pays</th>
               <th className="w-8" />
             </tr>
           </thead>
+
           <tbody className="divide-y divide-gray-100">
             {rows.map((row, rowIdx) => {
-              const total = rowTotal(row);
+              const each = perPersonAmount(row);
               const err = rowErrors.get(rowIdx);
               return (
-                <tr
-                  key={row.key}
-                  className={`group ${err ? 'bg-red-50' : 'hover:bg-gray-50'}`}
-                >
+                <tr key={row.key} className={`group ${err ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
                   {/* Date */}
                   <td className="px-2 py-2">
                     <input
@@ -213,19 +221,33 @@ export default function BulkEntryGrid({
 
                   {/* Expense name */}
                   <td className="px-2 py-2">
-                    <div>
+                    <input
+                      type="text"
+                      placeholder="e.g. Dinner"
+                      value={row.title}
+                      onChange={(e) => updateRow(row.key, 'title', e.target.value)}
+                      className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        err && !row.title.trim() ? 'border-red-400' : 'border-gray-200'
+                      }`}
+                    />
+                    {err && <p className="text-xs text-red-600 mt-0.5 leading-tight">{err}</p>}
+                  </td>
+
+                  {/* Amount */}
+                  <td className="px-2 py-2">
+                    <div className="relative">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
                       <input
-                        type="text"
-                        placeholder="e.g. Dinner"
-                        value={row.title}
-                        onChange={(e) => updateRow(row.key, 'title', e.target.value)}
-                        className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                          err && !row.title.trim() ? 'border-red-400' : 'border-gray-200'
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={row.amount}
+                        onChange={(e) => updateRow(row.key, 'amount', e.target.value)}
+                        className={`w-full border rounded-lg pl-5 pr-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          err && (!row.amount || parseFloat(row.amount) <= 0) ? 'border-red-400' : 'border-gray-200'
                         }`}
                       />
-                      {err && (
-                        <p className="text-xs text-red-600 mt-0.5 leading-tight">{err}</p>
-                      )}
                     </div>
                   </td>
 
@@ -240,36 +262,31 @@ export default function BulkEntryGrid({
                     >
                       <option value="">— select —</option>
                       {participants.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
+                        <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
                     </select>
                   </td>
 
-                  {/* Per-participant amount columns */}
+                  {/* Shared-with checkboxes */}
                   {participants.map((p) => (
-                    <td key={p.id} className="px-2 py-2">
-                      <div className="relative">
-                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={row.amounts[p.id]}
-                          onChange={(e) => updateAmount(row.key, p.id, e.target.value)}
-                          className="w-full border border-gray-200 rounded-lg pl-5 pr-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        />
-                      </div>
+                    <td key={p.id} className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={row.shared.has(p.id)}
+                        onChange={() => toggleParticipant(row.key, p.id)}
+                        className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
                     </td>
                   ))}
 
-                  {/* Total */}
+                  {/* Each Pays */}
                   <td className="px-3 py-2 text-right">
-                    <span className={`text-sm font-semibold ${total > 0 ? 'text-gray-900' : 'text-gray-300'}`}>
-                      ${total.toFixed(2)}
+                    <span className={`text-sm font-semibold ${each > 0 ? 'text-indigo-700' : 'text-gray-300'}`}>
+                      {each > 0 ? `$${each.toFixed(2)}` : '—'}
                     </span>
+                    {row.shared.size > 0 && each > 0 && (
+                      <div className="text-xs text-gray-400">÷ {row.shared.size}</div>
+                    )}
                   </td>
 
                   {/* Delete row */}
@@ -290,25 +307,21 @@ export default function BulkEntryGrid({
             })}
           </tbody>
 
-          {/* Summary row */}
           <tfoot>
             <tr className="bg-gray-50 border-t border-gray-200">
-              <td colSpan={3} className="px-3 py-2 text-xs text-gray-400 font-medium">
+              <td colSpan={4} className="px-3 py-2 text-xs text-gray-400 font-medium">
                 {rows.length} row{rows.length !== 1 ? 's' : ''}
               </td>
               {participants.map((p) => {
-                const colTotal = rows.reduce((sum, row) => {
-                  const n = parseFloat(row.amounts[p.id] || '0');
-                  return sum + (isNaN(n) ? 0 : n);
-                }, 0);
+                const checked = rows.filter((r) => r.shared.has(p.id)).length;
                 return (
-                  <td key={p.id} className="px-3 py-2 text-right text-xs font-semibold text-gray-600">
-                    ${colTotal.toFixed(2)}
+                  <td key={p.id} className="px-3 py-2 text-center text-xs text-gray-400">
+                    {checked}/{rows.length}
                   </td>
                 );
               })}
               <td className="px-3 py-2 text-right text-xs font-bold text-gray-900">
-                ${rows.reduce((s, r) => s + rowTotal(r), 0).toFixed(2)}
+                ${grandTotal.toFixed(2)}
               </td>
               <td />
             </tr>
@@ -316,7 +329,6 @@ export default function BulkEntryGrid({
         </table>
       </div>
 
-      {/* Actions */}
       <div className="flex items-center justify-between">
         <button
           onClick={addRow}
@@ -324,7 +336,6 @@ export default function BulkEntryGrid({
         >
           + Add Row
         </button>
-
         <div className="flex gap-3">
           <a
             href={`/sheets/${sheetId}`}
