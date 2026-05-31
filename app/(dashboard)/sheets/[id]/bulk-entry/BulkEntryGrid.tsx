@@ -53,6 +53,43 @@ function isYes(val: string): boolean {
   return ['y', 'yes'].includes(val.trim().toLowerCase());
 }
 
+// Google Sheets exports dates as M/D/YYYY or D/M/YYYY depending on locale.
+// Normalise any common format to YYYY-MM-DD so <input type="date"> renders it.
+function normalizeDate(raw: string): string {
+  const s = raw.trim();
+  if (!s) return '';
+
+  // Already YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  // MM/DD/YYYY or M/D/YYYY  (Google Sheets US locale default)
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slash) {
+    const [, m, d, y] = slash;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+
+  // DD-MM-YYYY or D-M-YYYY
+  const dash = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (dash) {
+    const [, d, m, y] = dash;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+
+  // DD.MM.YYYY (European dot format)
+  const dot = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (dot) {
+    const [, d, m, y] = dot;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+
+  // Fallback: let JS parse it (handles "Jan 15, 2026", "15 Jan 2026", etc.)
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+
+  return ''; // unrecognised — leave blank
+}
+
 export default function BulkEntryGrid({
   sheetId,
   participants,
@@ -160,7 +197,7 @@ export default function BulkEntryGrid({
 
       for (let i = 1; i < lines.length; i++) {
         const cols = parseCSVLine(lines[i]);
-        const date = cols[0]?.trim() ?? '';
+        const date = normalizeDate(cols[0] ?? '');
         const title = cols[1]?.trim() ?? '';
         const amountRaw = cols[2]?.trim() ?? '';
         const whoRaw = cols[3]?.trim().toLowerCase() ?? '';
