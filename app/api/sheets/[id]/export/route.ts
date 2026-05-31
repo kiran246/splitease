@@ -97,23 +97,41 @@ export async function POST(req: Request, { params }: Params) {
   return NextResponse.json({ error: 'Use GET for PDF download' }, { status: 400 });
 }
 
+function sharedHtml(splits: Array<{ amount: number; participant: { name: string } }>, total: number): string {
+  if (!splits || splits.length === 0) return '—';
+  const n = splits.length;
+  const isEqual = splits.every((s) => Math.abs(s.amount - total / n) < 0.02);
+  if (isEqual) return `<span style="color:#4338ca">Equal among ${n}: ${splits.map((s) => s.participant.name).join(', ')}</span>`;
+  return splits.map((s) => `${s.participant.name}: $${s.amount.toFixed(2)}`).join(' · ');
+}
+
 function buildSheetHtml(
   title: string, total: number,
-  transactions: Array<{ title: string; amount: number; paidBy: { name: string } }>,
+  transactions: Array<{ title: string; amount: number; paidBy: { name: string }; splits: Array<{ amount: number; participant: { name: string } }> }>,
   settlements: Array<{ from: string; to: string; amount: number }>
 ) {
   const txRows = transactions
-    .map((t) => `<tr><td style="padding:6px 10px">${t.title}</td><td style="padding:6px 10px">$${t.amount.toFixed(2)}</td><td style="padding:6px 10px">${t.paidBy.name}</td></tr>`)
+    .map((t) => `<tr>
+      <td style="padding:6px 10px">${t.title}</td>
+      <td style="padding:6px 10px">${t.paidBy.name}</td>
+      <td style="padding:6px 10px;text-align:right">$${t.amount.toFixed(2)}</td>
+      <td style="padding:6px 10px;font-size:12px">${sharedHtml(t.splits, t.amount)}</td>
+    </tr>`)
     .join('');
   const sRows = settlements
     .map((s) => `<tr><td style="padding:6px 10px;color:#dc2626">${s.from}</td><td style="padding:6px 10px;color:#059669">${s.to}</td><td style="padding:6px 10px;font-weight:bold">$${s.amount.toFixed(2)}</td></tr>`)
     .join('');
-  return `<div style="font-family:sans-serif;max-width:600px;margin:auto">
+  return `<div style="font-family:sans-serif;max-width:700px;margin:auto">
     <h1 style="color:#4338ca">${title}</h1>
     <p style="font-size:18px">Total: <strong>$${total.toFixed(2)}</strong></p>
     <h3>Transactions</h3>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb">
-      <tr style="background:#f9fafb"><th style="padding:6px 10px;text-align:left">Title</th><th style="padding:6px 10px;text-align:left">Amount</th><th style="padding:6px 10px;text-align:left">Paid By</th></tr>
+      <tr style="background:#f9fafb">
+        <th style="padding:6px 10px;text-align:left">Expense</th>
+        <th style="padding:6px 10px;text-align:left">Paid By</th>
+        <th style="padding:6px 10px;text-align:right">Amount</th>
+        <th style="padding:6px 10px;text-align:left">Shared With</th>
+      </tr>
       ${txRows}
     </table>
     <h3>Settlements</h3>

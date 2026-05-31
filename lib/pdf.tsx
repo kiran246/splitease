@@ -17,29 +17,60 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e5e7eb', paddingBottom: 4,
   },
   tableHeader: { flexDirection: 'row', backgroundColor: '#f9fafb', padding: '6 8', borderRadius: 4 },
-  tableRow: { flexDirection: 'row', padding: '5 8', borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
-  colTitle: { flex: 3 },
-  colAmount: { flex: 1.2, textAlign: 'right' },
-  colPaidBy: { flex: 1.8 },
+  tableRow: { flexDirection: 'row', padding: '5 8', borderBottomWidth: 1, borderBottomColor: '#f3f4f6', alignItems: 'flex-start' },
+  colExpense: { flex: 2.2 },
+  colPaidBy: { flex: 1.4 },
+  colAmount:  { flex: 0.9, textAlign: 'right' },
+  colShared:  { flex: 3, paddingLeft: 8 },
   headerText: { fontFamily: 'Helvetica-Bold', fontSize: 9, color: '#6b7280' },
-  cellText: { fontSize: 9, color: '#374151' },
+  cellText:   { fontSize: 9, color: '#374151' },
+  sharedEqual: { fontSize: 8, color: '#4338ca' },
+  sharedSplit: { fontSize: 8, color: '#374151' },
   settlementRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: '#fffbeb', borderRadius: 6, padding: '7 10', marginBottom: 5,
     borderWidth: 1, borderColor: '#fde68a',
   },
-  fromText: { fontSize: 10, color: '#dc2626', fontFamily: 'Helvetica-Bold' },
-  toText: { fontSize: 10, color: '#059669', fontFamily: 'Helvetica-Bold' },
+  fromText:   { fontSize: 10, color: '#dc2626', fontFamily: 'Helvetica-Bold' },
+  toText:     { fontSize: 10, color: '#059669', fontFamily: 'Helvetica-Bold' },
   amountText: { fontSize: 10, fontFamily: 'Helvetica-Bold', color: '#1a1a1a' },
   footer: { position: 'absolute', bottom: 24, left: 40, right: 40, textAlign: 'center', color: '#9ca3af', fontSize: 8 },
 });
 
-interface SheetPdfProps {
+interface Split {
+  amount: number;
+  participant: { name: string };
+}
+
+interface PdfTransaction {
+  title: string;
+  amount: number;
+  paidBy: { name: string };
+  splits: Split[];
+}
+
+export interface SheetPdfProps {
   title: string;
   total: number;
-  transactions: Array<{ title: string; amount: number; paidBy: { name: string } }>;
+  transactions: PdfTransaction[];
   settlements: SettlementEntry[];
   generatedAt: string;
+}
+
+function sharedLabel(splits: Split[], total: number): { equal: boolean; label: string } {
+  if (!splits || splits.length === 0) return { equal: false, label: '—' };
+
+  const n = splits.length;
+  const expectedEach = total / n;
+  const isEqual = splits.every((s) => Math.abs(s.amount - expectedEach) < 0.02);
+
+  if (isEqual) {
+    const names = splits.map((s) => s.participant.name).join(', ');
+    return { equal: true, label: `Equal among ${n}: ${names}` };
+  }
+
+  const parts = splits.map((s) => `${s.participant.name} $${s.amount.toFixed(2)}`).join(' · ');
+  return { equal: false, label: parts };
 }
 
 function SheetDocument({ title, total, transactions, settlements, generatedAt }: SheetPdfProps) {
@@ -55,21 +86,32 @@ function SheetDocument({ title, total, transactions, settlements, generatedAt }:
         </View>
 
         <Text style={styles.sectionTitle}>Transactions ({transactions.length})</Text>
+
         <View style={styles.tableHeader}>
-          <Text style={[styles.headerText, styles.colTitle]}>TITLE</Text>
-          <Text style={[styles.headerText, styles.colAmount]}>AMOUNT</Text>
+          <Text style={[styles.headerText, styles.colExpense]}>EXPENSE</Text>
           <Text style={[styles.headerText, styles.colPaidBy]}>PAID BY</Text>
+          <Text style={[styles.headerText, styles.colAmount]}>AMOUNT</Text>
+          <Text style={[styles.headerText, styles.colShared]}>SHARED WITH</Text>
         </View>
-        {transactions.map((t, i) => (
-          <View key={i} style={styles.tableRow}>
-            <Text style={[styles.cellText, styles.colTitle]}>{t.title}</Text>
-            <Text style={[styles.cellText, styles.colAmount]}>${t.amount.toFixed(2)}</Text>
-            <Text style={[styles.cellText, styles.colPaidBy]}>{t.paidBy.name}</Text>
-          </View>
-        ))}
+
+        {transactions.map((t, i) => {
+          const { equal, label } = sharedLabel(t.splits, t.amount);
+          return (
+            <View key={i} style={styles.tableRow}>
+              <Text style={[styles.cellText, styles.colExpense]}>{t.title}</Text>
+              <Text style={[styles.cellText, styles.colPaidBy]}>{t.paidBy.name}</Text>
+              <Text style={[styles.cellText, styles.colAmount]}>${t.amount.toFixed(2)}</Text>
+              <Text style={[equal ? styles.sharedEqual : styles.sharedSplit, styles.colShared]}>
+                {label}
+              </Text>
+            </View>
+          );
+        })}
 
         <Text style={styles.sectionTitle}>
-          {settlements.length === 0 ? 'Settlements — All Settled Up ✓' : `Settlements (${settlements.length} transfer${settlements.length > 1 ? 's' : ''})`}
+          {settlements.length === 0
+            ? 'Settlements — All Settled Up ✓'
+            : `Settlements (${settlements.length} transfer${settlements.length > 1 ? 's' : ''})`}
         </Text>
         {settlements.map((s, i) => (
           <View key={i} style={styles.settlementRow}>
