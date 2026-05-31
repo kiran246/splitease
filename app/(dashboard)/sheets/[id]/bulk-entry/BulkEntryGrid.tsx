@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 type Participant = { id: string; name: string };
@@ -11,10 +11,11 @@ type Row = {
   title: string;
   amount: string;
   paidById: string;
-  shared: Set<string>; // participant IDs who share this expense
+  shared: Set<string>;
 };
 
 type RowError = { row: number; error: string };
+type ParseError = { line: number; reason: string };
 
 let rowCounter = 0;
 
@@ -25,7 +26,7 @@ function newRow(participants: Participant[]): Row {
     title: '',
     amount: '',
     paidById: '',
-    shared: new Set(participants.map((p) => p.id)), // all checked by default
+    shared: new Set(participants.map((p) => p.id)),
   };
 }
 
@@ -33,6 +34,23 @@ function perPersonAmount(row: Row): number {
   const total = parseFloat(row.amount);
   if (isNaN(total) || total <= 0 || row.shared.size === 0) return 0;
   return Math.round((total / row.shared.size) * 100) / 100;
+}
+
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (const char of line) {
+    if (char === '"') { inQuotes = !inQuotes; continue; }
+    if (char === ',' && !inQuotes) { result.push(current); current = ''; continue; }
+    current += char;
+  }
+  result.push(current);
+  return result;
+}
+
+function isYes(val: string): boolean {
+  return ['y', 'yes'].includes(val.trim().toLowerCase());
 }
 
 export default function BulkEntryGrid({
@@ -43,6 +61,8 @@ export default function BulkEntryGrid({
   participants: Participant[];
 }) {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [rows, setRows] = useState<Row[]>(() => [
     newRow(participants),
     newRow(participants),
@@ -50,6 +70,7 @@ export default function BulkEntryGrid({
   ]);
   const [saving, setSaving] = useState(false);
   const [rowErrors, setRowErrors] = useState<Map<number, string>>(new Map());
+  const [parseErrors, setParseErrors] = useState<ParseError[]>([]);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'partial'; msg: string } | null>(null);
 
   function notify(type: 'success' | 'error' | 'partial', msg: string) {
@@ -81,6 +102,133 @@ export default function BulkEntryGrid({
     );
   }
 
+  // ── Template download ──────────────────────────────────────────────────────
+
+  function downloadTemplate() {
+    const fixedHeaders = ['Date', 'Expense', 'Amount', 'Who Paid'];
+    const participantHeaders = participants.map((p) => p.name);
+    const headers = [...fixedHeaders, ...participantHeaders];
+
+    const sampleRow = [
+      '2026-01-15',
+      'Dinner',
+      '90',
+      participants[0]?.name ?? 'Name',
+      ...participants.map(() => 'Y'),
+    ];
+
+    const csv = [headers.join(','), sampleRow.join(',')].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'bulk-expenses-template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── CSV upload & parse ─────────────────────────────────────────────────────
+
+  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.split(/\r?\n/).filter((l) => l.trim());
+      if (lines.length < 2) {
+        notify('error', 'CSV must have a header row and at least one data row');
+        return;
+      }
+
+      const rawHeaders = parseCSVLine(lines[0]).map((h) => h.trim());
+      const fixedCount = 4; // Date, Expense, Amount, Who Paid
+      const csvParticipantNames = rawHeaders.slice(fixedCount).map((h) => h.toLowerCase());
+
+      // Build a name→participant map for fast lookup
+      const nameToParticipant = new Map(participants.map((p) => [p.name.toLowerCase(), p]));
+
+      // Warn about unrecognised participant columns but still proceed
+      const unknownCols = csvParticipantNames.filter((n) => !nameToParticipant.has(n));
+      const parsedErrors: ParseError[] = unknownCols.map((n) => ({
+        line: 1,
+        reason: `Column "${n}" doesn't match any participant in this sheet — it will be ignored`,
+      }));
+
+      const parsedRows: Row[] = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = parseCSVLine(lines[i]);
+        const date = cols[0]?.trim() ?? '';
+        const title = cols[1]?.trim() ?? '';
+        const amountRaw = cols[2]?.trim() ?? '';
+        const whoRaw = cols[3]?.trim().toLowerCase() ?? '';
+
+        if (!title && !amountRaw && !whoRaw) continue; // skip blank rows
+
+        if (!title) {
+          parsedErrors.push({ line: i + 1, reason: 'Missing expense name — row skipped' });
+          continue;
+        }
+
+        const amount = parseFloat(amountRaw);
+        if (isNaN(amount) || amount <= 0) {
+          parsedErrors.push({ line: i + 1, reason: `"${title}": invalid amount "${amountRaw}" — row skipped` });
+          continue;
+        }
+
+        const payer = nameToParticipant.get(whoRaw);
+        if (!payer) {
+          parsedErrors.push({ line: i + 1, reason: `"${title}": "Who Paid" value "${cols[3]?.trim()}" doesn't match any participant — row skipped` });
+          continue;
+        }
+
+        // Build shared set from Y/N columns
+        const shared = new Set<string>();
+        csvParticipantNames.forEach((name, colIdx) => {
+          const p = nameToParticipant.get(name);
+          if (!p) return;
+          const val = cols[fixedCount + colIdx]?.trim() ?? '';
+          if (isYes(val)) shared.add(p.id);
+        });
+
+        if (shared.size === 0) {
+          parsedErrors.push({ line: i + 1, reason: `"${title}": no participants marked Y — defaulting to all` });
+          participants.forEach((p) => shared.add(p.id));
+        }
+
+        parsedRows.push({
+          key: rowCounter++,
+          date,
+          title,
+          amount: amount.toString(),
+          paidById: payer.id,
+          shared,
+        });
+      }
+
+      setParseErrors(parsedErrors);
+
+      if (parsedRows.length === 0) {
+        notify('error', 'No valid rows found in the file');
+      } else {
+        setRows(parsedRows);
+        setRowErrors(new Map());
+        notify(
+          parsedErrors.length > 0 ? 'partial' : 'success',
+          `Loaded ${parsedRows.length} row${parsedRows.length !== 1 ? 's' : ''} from file${parsedErrors.length > 0 ? ` (${parsedErrors.length} warning${parsedErrors.length !== 1 ? 's' : ''} — see below)` : ''}`
+        );
+      }
+    };
+
+    reader.readAsText(file);
+    // Reset input so the same file can be re-uploaded if needed
+    e.target.value = '';
+  }
+
+  // ── Save ──────────────────────────────────────────────────────────────────
+
   function validateRow(row: Row): string | null {
     if (!row.title.trim()) return 'Expense name is required';
     if (!row.paidById) return '"Who Paid" is required';
@@ -111,9 +259,7 @@ export default function BulkEntryGrid({
         const total = parseFloat(row.amount);
         const sharedIds = [...row.shared];
         const each = Math.round((total / sharedIds.length) * 100) / 100;
-        // Distribute rounding remainder to the first participant
         const remainder = Math.round((total - each * sharedIds.length) * 100) / 100;
-
         return {
           date: row.date || undefined,
           title: row.title.trim(),
@@ -140,14 +286,11 @@ export default function BulkEntryGrid({
 
       if (data.errors?.length > 0) {
         const errorRowIndices = new Set((data.errors as RowError[]).map((e) => e.row));
-
         if (data.created > 0) {
           notify('partial', `Saved ${data.created} expense${data.created > 1 ? 's' : ''}. Fix ${data.errors.length} remaining error${data.errors.length > 1 ? 's' : ''}.`);
-          const newServerErrors = new Map<number, string>();
           const failedRows = rows.filter((_, i) => errorRowIndices.has(i));
-          (data.errors as RowError[]).forEach((e, newIdx) => {
-            newServerErrors.set(newIdx, e.error);
-          });
+          const newServerErrors = new Map<number, string>();
+          (data.errors as RowError[]).forEach((e, newIdx) => newServerErrors.set(newIdx, e.error));
           setRows(failedRows);
           setRowErrors(newServerErrors);
         } else {
@@ -168,6 +311,8 @@ export default function BulkEntryGrid({
     }
   }
 
+  // ── Render ────────────────────────────────────────────────────────────────
+
   const toastColor =
     toast?.type === 'success' ? 'bg-green-600' :
     toast?.type === 'partial' ? 'bg-yellow-600' : 'bg-red-600';
@@ -185,6 +330,52 @@ export default function BulkEntryGrid({
         </div>
       )}
 
+      {/* Upload / Download toolbar */}
+      <div className="flex flex-wrap items-center gap-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-gray-700">Import from Google Sheets / Excel</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Download the template, fill it in, then upload — participant columns use <strong>Y</strong> / <strong>N</strong>.
+          </p>
+        </div>
+        <button
+          onClick={downloadTemplate}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-white transition whitespace-nowrap"
+        >
+          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          Download Template
+        </button>
+        <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-indigo-700 border border-indigo-300 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition whitespace-nowrap"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12" />
+          </svg>
+          Upload CSV
+        </button>
+      </div>
+
+      {/* Parse warnings */}
+      {parseErrors.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl px-4 py-3 space-y-1">
+          <p className="text-xs font-semibold text-yellow-800">
+            {parseErrors.length} warning{parseErrors.length !== 1 ? 's' : ''} from file import:
+          </p>
+          <ul className="space-y-0.5">
+            {parseErrors.map((e, i) => (
+              <li key={i} className="text-xs text-yellow-700">
+                {e.line > 1 ? `Row ${e.line}: ` : ''}{e.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Grid */}
       <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="text-sm border-collapse min-w-full">
           <thead>
@@ -209,7 +400,6 @@ export default function BulkEntryGrid({
               const err = rowErrors.get(rowIdx);
               return (
                 <tr key={row.key} className={`group ${err ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
-                  {/* Date */}
                   <td className="px-2 py-2">
                     <input
                       type="date"
@@ -218,8 +408,6 @@ export default function BulkEntryGrid({
                       className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </td>
-
-                  {/* Expense name */}
                   <td className="px-2 py-2">
                     <input
                       type="text"
@@ -232,8 +420,6 @@ export default function BulkEntryGrid({
                     />
                     {err && <p className="text-xs text-red-600 mt-0.5 leading-tight">{err}</p>}
                   </td>
-
-                  {/* Amount */}
                   <td className="px-2 py-2">
                     <div className="relative">
                       <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">$</span>
@@ -250,8 +436,6 @@ export default function BulkEntryGrid({
                       />
                     </div>
                   </td>
-
-                  {/* Who Paid */}
                   <td className="px-2 py-2">
                     <select
                       value={row.paidById}
@@ -266,8 +450,6 @@ export default function BulkEntryGrid({
                       ))}
                     </select>
                   </td>
-
-                  {/* Shared-with checkboxes */}
                   {participants.map((p) => (
                     <td key={p.id} className="px-2 py-2 text-center">
                       <input
@@ -278,8 +460,6 @@ export default function BulkEntryGrid({
                       />
                     </td>
                   ))}
-
-                  {/* Each Pays */}
                   <td className="px-3 py-2 text-right">
                     <span className={`text-sm font-semibold ${each > 0 ? 'text-indigo-700' : 'text-gray-300'}`}>
                       {each > 0 ? `$${each.toFixed(2)}` : '—'}
@@ -288,8 +468,6 @@ export default function BulkEntryGrid({
                       <div className="text-xs text-gray-400">÷ {row.shared.size}</div>
                     )}
                   </td>
-
-                  {/* Delete row */}
                   <td className="px-2 py-2 text-center">
                     <button
                       onClick={() => removeRow(row.key)}
