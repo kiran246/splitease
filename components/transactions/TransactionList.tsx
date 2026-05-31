@@ -50,11 +50,7 @@ export default function TransactionList({
 
   const filtered = useMemo(() => {
     if (!filterParticipantId) return transactions;
-    return transactions.filter(
-      (tx) =>
-        tx.paidBy.id === filterParticipantId ||
-        tx.splits.some((s) => s.participant.id === filterParticipantId)
-    );
+    return transactions.filter((tx) => tx.paidBy.id === filterParticipantId);
   }, [transactions, filterParticipantId]);
 
   async function deleteTransaction(tid: string) {
