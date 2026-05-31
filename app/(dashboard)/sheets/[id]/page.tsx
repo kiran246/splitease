@@ -6,7 +6,6 @@ import { computeBalances, computeSettlements } from '@/lib/settlement';
 import SettlementPanel from '@/components/settlement/SettlementPanel';
 import TransactionList from '@/components/transactions/TransactionList';
 import ExportPanel from '@/components/sheets/ExportPanel';
-import ImportButton from '@/components/sheets/ImportButton';
 import CollaboratorsPanel from '@/components/sheets/CollaboratorsPanel';
 
 type Props = { params: Promise<{ id: string }> };
@@ -63,7 +62,6 @@ export default async function SheetDetailPage({ params }: Props) {
           >
             Edit Sheet
           </Link>
-          <ImportButton sheetId={id} />
           <Link
             href={`/sheets/${id}/bulk-entry`}
             className="px-4 py-2 border border-indigo-300 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-50 transition"
