@@ -85,8 +85,10 @@ export async function POST(req: Request, { params }: Params) {
         },
       });
       results.push({ row: i, id: txn.id });
-    } catch {
-      results.push({ row: i, error: 'Failed to save row' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save row';
+      console.error(`Bulk save row ${i}:`, err);
+      results.push({ row: i, error: msg });
     }
   }
 
